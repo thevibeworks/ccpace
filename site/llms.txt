@@ -1,0 +1,12 @@
+# ccpace
+
+> Multi-account usage monitor for Claude subscriptions: real utilization
+> from the official usage endpoint, countable 5h-window budget, weekday
+> forecasts from local history, push notifications (ntfy/bark/system).
+> Single-file Python (uv), MIT, by thevibeworks.
+
+- [README](https://github.com/thevibeworks/ccpace/blob/main/README.md): install, flags, env vars
+- [ccpace.py](https://raw.githubusercontent.com/thevibeworks/ccpace/main/ccpace.py): the whole tool, one file
+- [Data contract](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): store v1 record shapes, shared with claude-code-statusline
+- [Statusline interop](https://github.com/thevibeworks/ccpace/blob/main/docs/statusline-interop.md): shared-store proposal
+- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md)

@@ -1,0 +1,34 @@
+[project]
+name = "ccpace"
+version = "0.1.0"
+description = "Pace your Claude quota: multi-account usage monitor with a countable 5h-window budget, weekday forecasts, and push notifications"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "thevibeworks" }]
+requires-python = ">=3.11"
+dependencies = ["httpx[socks]"]
+keywords = ["claude", "claude-code", "usage", "quota", "monitor", "rate-limit"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://thevibeworks.github.io/ccpace/"
+Repository = "https://github.com/thevibeworks/ccpace"
+Changelog = "https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md"
+
+[project.scripts]
+ccpace = "ccpace:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = ["ccpace.py"]
+
+[tool.hatch.build.targets.sdist]
+include = ["ccpace.py", "README.md", "LICENSE", "docs/data.md"]

@@ -1,0 +1,270 @@
+/* ccpace site
+ *
+ * Same design tokens as thevibeworks.github.io and deepseek-cli — black,
+ * mono, cyan and pink — so this reads as family. ccpace is a monitor;
+ * the page stays calm and precise like the tool: one interactive
+ * flourish (the live terminal demo), no glitter.
+ *
+ * No framework, no build step, no JS required to read anything.
+ */
+
+:root {
+    color-scheme: light dark;
+
+    --bg: #000000;
+    --bg: light-dark(#fbfaf7, #000000);
+    --surface: #0d0d0d;
+    --surface: light-dark(#f2f1ec, #0d0d0d);
+    --surface-2: #141414;
+    --surface-2: light-dark(#e8e7e0, #141414);
+    --line: #262626;
+    --line: light-dark(#d4d1c7, #262626);
+    --text: #e8e8e8;
+    --text: light-dark(#17171a, #e8e8e8);
+    --muted: #9a9a9a;
+    --muted: light-dark(#5a5a60, #9a9a9a);
+    --cyan: #00c2e9;
+    --cyan: light-dark(#0a6e85, #00c2e9);
+    --pink: #e41478;
+    --pink: light-dark(#bd0e60, #e41478);
+    --yellow: #ffd53d;
+    --yellow: light-dark(#7a5200, #ffd53d);
+    --strong: #ffffff;
+    --strong: light-dark(#000000, #ffffff);
+    --masthead-bg: rgba(0, 0, 0, 0.9);
+    --masthead-bg: light-dark(rgba(251, 250, 247, 0.9), rgba(0, 0, 0, 0.9));
+    --scanline: rgba(0, 194, 233, 0.025);
+    --scanline: light-dark(transparent, rgba(0, 194, 233, 0.025));
+
+    --measure: 68ch;
+    --gutter: 1.5rem;
+    --dur-fast: 140ms;
+    --dur-slow: 320ms;
+    --ease: cubic-bezier(0.25, 0, 0.2, 1);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 15px;
+    line-height: 1.65;
+    background-image: repeating-linear-gradient(
+        0deg, var(--scanline) 0 1px, transparent 1px 3px);
+}
+
+.wrap { max-width: 60rem; margin: 0 auto; padding: 0 var(--gutter); }
+
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2 { color: var(--strong); line-height: 1.25; }
+h1 { font-size: 1.7rem; margin: 0 0 1rem; }
+h2 { font-size: 1.15rem; margin: 3rem 0 1rem; }
+h2::before { content: "## "; color: var(--pink); }
+
+p, li { max-width: var(--measure); }
+.muted { color: var(--muted); }
+
+/* ---------- masthead ---------- */
+
+.masthead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--masthead-bg);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line);
+}
+
+.masthead .wrap {
+    display: flex;
+    align-items: center;
+    gap: 1.2rem;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+}
+
+.brand { color: var(--strong); white-space: nowrap; }
+.brand .caret { color: var(--pink); margin-right: 0.35rem; }
+.brand .org { color: var(--muted); }
+.brand .name { color: var(--strong); font-weight: 700; }
+.brand:hover { text-decoration: none; }
+
+.sitenav { display: flex; gap: 1rem; margin-left: auto; flex-wrap: wrap; }
+.sitenav a { color: var(--muted); transition: color var(--dur-fast) var(--ease); }
+.sitenav a:hover { color: var(--cyan); text-decoration: none; }
+
+#theme-toggle {
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.6rem;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease),
+        border-color var(--dur-fast) var(--ease);
+}
+#theme-toggle:hover { color: var(--cyan); border-color: var(--cyan); }
+
+/* ---------- hero ---------- */
+
+.hero { padding: 4rem 0 1rem; }
+.hero .tagline { color: var(--muted); max-width: var(--measure); }
+.hero .tagline strong { color: var(--strong); font-weight: 400; }
+
+.badges { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1.2rem 0 0; padding: 0; }
+.badges li {
+    list-style: none;
+    font-size: 0.75rem;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    padding: 0.1rem 0.6rem;
+}
+
+/* ---------- terminal ----------
+ * A picture of a terminal, not page furniture: stays dark in both
+ * themes, carries its own fixed palette. */
+
+.term {
+    --term-bg: #0d0d0d;
+    --term-bg-2: #141414;
+    --term-line: #262626;
+    --term-text: #e8e8e8;
+    --term-muted: #9a9a9a;
+    --term-cyan: #00c2e9;
+    --term-pink: #e41478;
+    --term-green: #00ff41;
+    --term-yellow: #ffd53d;
+    --term-magenta: #bf00ff;
+
+    color-scheme: only dark;
+    background: var(--term-bg);
+    color: var(--term-text);
+    border: 1px solid var(--term-line);
+    margin: 1.5rem 0;
+    overflow: hidden;
+}
+
+.term-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 0.8rem;
+    background: var(--term-bg-2);
+    border-bottom: 1px solid var(--term-line);
+    font-size: 0.75rem;
+    color: var(--term-muted);
+}
+
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.r { background: var(--term-pink); }
+.dot.y { background: var(--term-yellow); }
+.dot.g { background: var(--term-green); }
+.term-bar .title { margin-left: 0.4rem; }
+
+.term pre {
+    margin: 0;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--term-text);
+}
+
+.term .p { color: var(--term-green); }   /* prompt / ok */
+.term .o { color: var(--term-text); }    /* stdout */
+.term .c { color: var(--term-muted); }   /* comment / dim */
+.term .k { color: var(--term-cyan); }    /* flag / accent */
+.term .w { color: var(--term-yellow); }  /* warn / hot */
+.term .e { color: var(--term-pink); }    /* red / critical */
+.term .m { color: var(--term-magenta); } /* tier */
+.term .b { color: var(--term-text); font-weight: 700; }
+
+/* demo frame player: fixed height so frame swaps never reflow the page */
+#demo pre { min-height: 24.5em; }
+
+/* hoverable ledger glyphs — ccpace's one flourish. CSS-only tooltip. */
+.g { position: relative; cursor: help; }
+.g:hover { background: var(--term-bg-2); outline: 1px solid var(--term-line); }
+.g::after {
+    content: attr(data-note);
+    position: absolute;
+    left: 50%;
+    bottom: 1.6em;
+    transform: translateX(-50%) scale(0.98);
+    background: var(--term-bg-2);
+    color: var(--term-text);
+    border: 1px solid var(--term-line);
+    padding: 0.25rem 0.6rem;
+    font-size: 0.72rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease),
+        transform var(--dur-fast) var(--ease);
+    z-index: 5;
+}
+.g:hover::after { opacity: 1; transform: translateX(-50%) scale(1); }
+
+.legend {
+    font-size: 0.78rem;
+    color: var(--muted);
+    max-width: none;
+}
+.legend code { color: var(--text); }
+
+/* ---------- cards ---------- */
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem;
+    padding: 0;
+    margin: 1.5rem 0;
+}
+
+.card {
+    list-style: none;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 1rem 1.2rem;
+    transition: border-color var(--dur-fast) var(--ease);
+}
+.card:hover { border-color: var(--cyan); }
+.card h3 { margin: 0 0 0.5rem; font-size: 0.95rem; color: var(--strong); }
+.card p { margin: 0; font-size: 0.85rem; color: var(--muted); }
+.card p code { color: var(--text); }
+
+code {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    padding: 0.05rem 0.35rem;
+    font-size: 0.85em;
+}
+
+/* ---------- footer ---------- */
+
+footer {
+    margin-top: 4rem;
+    border-top: 1px solid var(--line);
+    padding: 1.5rem 0 3rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+footer .wrap { display: flex; gap: 1.2rem; flex-wrap: wrap; }
+footer .disclaimer { flex-basis: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; }
+}

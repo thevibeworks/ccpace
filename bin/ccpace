@@ -1,0 +1,8 @@
+#!/bin/sh
+# plugin PATH shim: one source of truth is ../ccpace.py (uv resolves deps)
+set -eu
+command -v uv >/dev/null 2>&1 || {
+    echo "ccpace: uv is required (https://docs.astral.sh/uv/)" >&2
+    exit 3
+}
+exec uv run --script "$(dirname "$0")/../ccpace.py" "$@"
