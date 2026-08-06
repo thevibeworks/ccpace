@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.1.1 (2026-08-06)
+
+### Shared fetch pool with claude-code-statusline
+
+usage.cache and profile.cache are now the pool, not private caches:
+ccpace reads a usage.cache younger than 60 s instead of fetching (and
+does not re-log the sample — one observation, one record), and
+publishes its own fetches back (atomic tmp+rename) so statusline's
+next render skips its fetch too. profile.cache shared the same way
+(raw profile, mtime TTL, 24 h). Two tools, one API load.
+
+### Forecast honors the access boundary
+
+The weekday projection now stops at the subscription period end when
+that lands before the 7d reset — the ledger's `┤`, the budget count,
+and the forecast line all describe the same span ("+10% by period
+end" instead of a "rest of week" number you cannot spend).
+
 ## v0.1.0 (2026-08-06)
 
 First release. Extracted from thevibeworks' internal claudex lab

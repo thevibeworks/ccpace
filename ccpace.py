@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.1.0
+# Version: 0.1.1
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -72,7 +72,7 @@ from typing import Any, Literal
 
 import httpx
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 CLI_VERSION = "2.1.220"
 PROG = "ccpace"
 LOGGER = logging.getLogger(PROG)
@@ -885,12 +885,20 @@ def write_forecast_cache(alias: str, forecast: dict) -> None:
         pass
 
 
-def forecast_line(forecast: dict | None, entry: dict, now: datetime) -> str | None:
+def forecast_line(
+    forecast: dict | None,
+    entry: dict,
+    now: datetime,
+    access_end: datetime | None = None,
+) -> str | None:
     """Project the rest of the 7d window on the weekday profile.
 
     Silent below FORECAST_MIN_DAYS of history: a model with no data is
     decoration. Unknown weekdays fall back to the profile's known-day
-    average.
+    average. When access ends before the reset, the projection stops at
+    the boundary the budget already stops at — one horizon per block,
+    never two (the ledger's ┤, the budget's count, and this line must
+    all describe the same span).
     """
     if not forecast or forecast["days_history"] < FORECAST_MIN_DAYS:
         return None
@@ -901,22 +909,28 @@ def forecast_line(forecast: dict | None, entry: dict, now: datetime) -> str | No
         return None
     fallback = sum(known) / len(known)
 
+    horizon = entry["reset_dt"]
+    truncated = access_end is not None and access_end < horizon
+    if truncated:
+        horizon = access_end
+
     projected = 0.0
     cursor = now.astimezone(tz)
-    reset = entry["reset_dt"].astimezone(tz)
-    while cursor < reset:
+    end = horizon.astimezone(tz)
+    while cursor < end:
         day_end = (cursor + timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        segment_end = min(day_end, reset)
+        segment_end = min(day_end, end)
         frac = (segment_end - cursor).total_seconds() / 86400
         rate = profile.get(str(cursor.date().toordinal() % 7), -1)
         projected += (rate if rate >= 0 else fallback) * frac
         cursor = segment_end
 
     lands = min(999, entry["util"] + projected)
+    span = "by period end" if truncated else "rest of week"
     return (
-        f"forecast: +{projected:.0f}% rest of week on your pattern"
+        f"forecast: +{projected:.0f}% {span} on your pattern"
         f" · lands ~{lands:.0f}% ({forecast['days_history']}d history)"
     )
 
@@ -974,6 +988,65 @@ def fetch_prepaid_credits(token: str, org_uuid: str, alias: str) -> dict | None:
     except httpx.HTTPError as e:
         LOGGER.debug("prepaid credits fetch failed: %s", e)
         return cached
+
+
+# --- shared fetch pool ---
+# statusline and ccpace observe the same account; whichever fetched last
+# serves both. usage.cache / profile.cache are statusline's shapes,
+# written atomically (tmp+rename) so either tool can read mid-write.
+
+SHARED_USAGE_FRESH_SEC = 60
+
+
+def read_shared_usage_cache(alias: str, max_age: int = SHARED_USAGE_FRESH_SEC) -> dict | None:
+    """A fresh usage.cache is a fetch someone already made — use it."""
+    path = account_dir(alias) / "usage.cache"
+    try:
+        data = json.loads(path.read_text())
+        age = datetime.now(timezone.utc).timestamp() - data.get("fetched_at", 0)
+        if 0 <= age <= max_age:
+            data["_from_shared_cache"] = True
+            return data
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def write_shared_usage_cache(alias: str, usage: dict) -> None:
+    """Publish our fetch so statusline's next render skips its own."""
+    path = account_dir(alias) / "usage.cache"
+    try:
+        payload = {k: v for k, v in usage.items() if not k.startswith("_")}
+        payload["fetched_at"] = int(datetime.now(timezone.utc).timestamp())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")))
+        tmp.replace(path)
+    except OSError as e:
+        LOGGER.debug("usage.cache write failed: %s", e)
+
+
+def read_shared_profile_cache(alias: str, max_age: int = PROFILE_TTL_SEC) -> dict | None:
+    """profile.cache is the raw profile; its mtime is the fetch time
+    (statusline's TTL rule — the file carries no fetched_at)."""
+    path = account_dir(alias) / "profile.cache"
+    try:
+        if datetime.now(timezone.utc).timestamp() - path.stat().st_mtime <= max_age:
+            return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def write_shared_profile_cache(alias: str, profile: dict) -> None:
+    path = account_dir(alias) / "profile.cache"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(profile, separators=(",", ":")))
+        tmp.replace(path)
+    except OSError as e:
+        LOGGER.debug("profile.cache write failed: %s", e)
 
 
 def attach_prepaid(
@@ -1362,7 +1435,14 @@ async def fetch_all_profiles_async(
     async with httpx.AsyncClient(limits=HTTP_LIMITS, timeout=HTTP_TIMEOUT) as client:
         for cred_path, token in credentials:
             label = str(cred_path)
-            results[label] = await fetch_profile_async(client, token, label)
+            alias = get_alias_from_label(label)
+            if profile := read_shared_profile_cache(alias):
+                results[label] = profile
+                continue
+            profile = await fetch_profile_async(client, token, label)
+            results[label] = profile
+            if profile:
+                write_shared_profile_cache(alias, profile)
     return results
 
 
@@ -1424,7 +1504,14 @@ async def fetch_all_usage_async(
     async with httpx.AsyncClient(limits=HTTP_LIMITS, timeout=HTTP_TIMEOUT) as client:
         for cred_path, token in credentials:
             label = str(cred_path)
-            results[label] = await info_usage_single_async(client, token, label, trace)
+            alias = get_alias_from_label(label)
+            if shared := read_shared_usage_cache(alias):
+                results[label] = (EXIT_OK, shared)
+                continue
+            code, data = await info_usage_single_async(client, token, label, trace)
+            results[label] = (code, data)
+            if code == EXIT_OK and data:
+                write_shared_usage_cache(alias, data)
     return results
 
 
@@ -1922,7 +2009,9 @@ def format_usage_display(
         forecast = weekday_burn_forecast(samples, acct_uuid, now)
         if forecast:
             write_forecast_cache(alias, forecast)
-            if line := forecast_line(forecast, seven_entry, now):
+            if line := forecast_line(
+                forecast, seven_entry, now, access[0] if access else None
+            ):
                 advice.append(("info", line))
 
     # advisor: pace warnings jut left for attention; the budget line sits
@@ -1994,7 +2083,13 @@ def info_usage(
         return EXIT_OK
 
     cred_path, token = credentials[0]
-    code, data = info_usage_single(token, str(cred_path), raw, trace)
+    alias = get_alias_from_label(str(cred_path))
+    if data := read_shared_usage_cache(alias):
+        code = EXIT_OK
+    else:
+        code, data = info_usage_single(token, str(cred_path), raw, trace)
+        if code == EXIT_OK and data:
+            write_shared_usage_cache(alias, data)
     if data:
         profiles = asyncio.run(fetch_all_profiles_async(credentials))
         attach_prepaid(data, profiles.get(str(cred_path)), token, str(cred_path))
@@ -2095,7 +2190,12 @@ def fetch_or_use_cache(
         LOGGER.warning("%s: no valid token", label)
         return None, False, EXIT_RUNTIME
 
+    alias = get_alias_from_label(label)
+    if shared := read_shared_usage_cache(alias):
+        return shared, False, EXIT_OK
     code, data = info_usage_single(token, label, False, trace)
+    if code == EXIT_OK and data:
+        write_shared_usage_cache(alias, data)
     return data, False, code
 
 
@@ -2139,8 +2239,14 @@ async def fetch_all_with_cache_async(
                 LOGGER.warning("%s: no valid token", label)
                 continue
 
+            alias = get_alias_from_label(label)
+            if shared := read_shared_usage_cache(alias):
+                results[label] = (shared, False, EXIT_OK)
+                continue
             code, data = await info_usage_single_async(client, token, label, trace)
             results[label] = (data, False, code)
+            if code == EXIT_OK and data:
+                write_shared_usage_cache(alias, data)
 
     return results
 
@@ -2595,7 +2701,7 @@ def log_usage_jsonl(
     history. Cached (100%-cap) responses are not logged: the log
     records observations, not echoes.
     """
-    if cached:
+    if cached or usage.get("_from_shared_cache"):
         return
     target = log_dir if log_dir else account_dir(get_alias_from_label(label))
     try:

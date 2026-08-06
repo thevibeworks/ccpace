@@ -102,6 +102,22 @@ writer can rotate without eating the other's history. Readers read
   the same numbers from the same log so the two surfaces cannot
   disagree. Rebuild at most hourly. Unknown weekday = -1.
 
+## Shared fetch pool
+
+usage.cache and profile.cache are not private caches — they are the
+pool. Whichever tool fetched last serves both:
+
+- Before fetching usage, read usage.cache; a `fetched_at` younger than
+  60 s IS the fetch. Samples served from the pool are not re-logged
+  (the fetcher already logged them — one observation, one record).
+- After a successful fetch, publish it: raw response + `fetched_at`,
+  written atomically (tmp + rename) so a concurrent reader never sees
+  a torn file. Same for profile.cache (raw profile, mtime is the fetch
+  time, 24 h TTL — statusline's rule).
+- Locks (`usage.lock` etc.) are advisory between statusline processes;
+  cross-tool safety comes from atomic rename, and the worst race costs
+  one duplicate fetch, never a corrupt cache.
+
 ## Fetch discipline (rate-limit hygiene)
 
 Defaults chosen so a fleet of watchers stays invisible to the API:
