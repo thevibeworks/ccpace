@@ -10,7 +10,7 @@ forecasts learned from your own history, and push notifications.
 5h     7% █▒░░░░░░░░  3h 48m   @19:00              0.3x
 7d     3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
 fable  3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
-           ··▁▮▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫┤
+           ˍˍ▁▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯┤
            budget: ~24 windows left · 4.0%/window stays even · period ends ~Aug 11
            forecast: +38% rest of week on your pattern · lands ~41% (12d history)
 ```
@@ -49,7 +49,7 @@ sorted by tier.
   usage ahead (hot), `▒` time ahead (headroom), `░` untouched.
 - The window ledger: the 7d period as its 5h windows, one cell each.
   `▁▂▃▄▅▆▇█` what a window burned (from your sample history), `·` idle,
-  `░` unknown, `▮` now, `▫` ahead, `×` won't be covered at current pace,
+  `░` unknown, `▮` now, `▯` ahead, `×` won't be covered at current pace,
   `┤` access ends there. Cells right of `▮` are countable — they equal
   the advisor's "windows left".
 - The advisor: pace warnings (`!`), budget per remaining window, and a
@@ -66,11 +66,14 @@ pace, and reset events. Add push channels:
 ```sh
 ccpace --watch --ntfy https://ntfy.sh/your-topic
 ccpace --watch --bark https://api.day.app/YOUR_KEY
+ccpace --watch --bark                        # bark CLI env: BARK_KEY on BARK_SERVER
 ccpace --watch --notifier ~/bin/my-hook.sh   # JSON on stdin
 ```
 
 Env: `CCPACE_NTFY`, `CCPACE_BARK`, `CCPACE_NOTIFIER`, `CCPACE_INTERVAL`,
 `CCPACE_THRESHOLD`, `CCPACE_TZ` (e.g. `America/New_York,Asia/Tokyo`).
+Bare `--bark` reads the bark CLI's own `BARK_KEY` / `BARK_SERVER`
+(default `api.day.app`), and `BARK_GROUP` / `BARK_ICON` ride along when set.
 
 ## Data
 
@@ -90,9 +93,18 @@ writing; `CCPACE_DATA_DIR` relocates the store.
 - One deliberate write: expired tokens are refreshed via the official
   OAuth flow and written back to the credentials file — the same thing
   Claude Code does on your behalf.
-- Polling is deliberately polite: 15 min default interval with jitter,
-  minimum 60 s, exponential backoff on errors, no polling of accounts
-  pinned at 100%.
+- Polling asks only when the answer can have changed: one fetch pool
+  shared with claude-code-statusline (same account, same directory, one
+  request serves both); in watch mode an account is not re-fetched while
+  Claude Code has done nothing since the last fetch (its history and
+  statusline session state, across every container sharing `~/.claude`)
+  and no window has reset — the block says `(idle 12m)`, `r` asks anyway.
+  Reset boundaries wake the loop; the 15 min interval (± jitter, min 60 s)
+  is the ceiling. A failed fetch keeps the last good numbers on screen,
+  badged `(stale 12m · !429)`, and the next poll is the retry — nothing
+  is locked out.
+- The grammar — rows, ledger, provenance, requests — is one page:
+  [DESIGN.md](DESIGN.md).
 - Forecasts are your own history extrapolated, not a promise. Below 3
   days of samples the forecast stays silent instead of guessing.
 - Not affiliated with Anthropic.

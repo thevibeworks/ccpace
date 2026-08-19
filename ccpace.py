@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.1.1
+# Version: 0.2.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -22,6 +22,7 @@ examples:
   %(prog)s --watch --threshold 90 --interval 300
   %(prog)s --watch --ntfy https://ntfy.sh/mytopic
   %(prog)s --watch --bark https://api.day.app/YOURKEY
+  BARK_KEY=... %(prog)s --watch --bark   # bark CLI env (BARK_SERVER/GROUP/ICON)
   CCPACE_TZ=America/New_York,Asia/Tokyo %(prog)s
 
 usage bars merge usage and window-elapsed time:
@@ -31,10 +32,10 @@ usage bars merge usage and window-elapsed time:
 on terminals >= 72 cols the 7d row grows a window ledger: one cell
 per 5h window of the period (34 cells), left to right in time —
   ▁▂▃▄▅▆▇█  a window that ran; height = 7d points it burned
-  ·         ran, burned under a point
+  ˍ         ran, burned under a point (a bar of height zero)
   ░         unknown: no samples on record for that window
   ▮         the window you are in now
-  ▫         a window still ahead of you
+  ▯         a window still ahead of you (the hollow of ▮: an empty slot)
   ×         a window the 7d pool will not cover at the current pace
   ┤         access ends here (trial end, or the derived sub period end
             assumed binding — the API states no renewal/cancel date)
@@ -44,7 +45,8 @@ docs/data.md); with no store the past is honestly ░, not empty.
 
 notifications: system notify is automatic; add channels with flags/env.
   --ntfy URL / CCPACE_NTFY       ntfy topic URL
-  --bark URL / CCPACE_BARK       bark endpoint (https://api.day.app/KEY)
+  --bark [URL] / CCPACE_BARK     bark endpoint (<server>/KEY); bare --bark
+                                 uses BARK_KEY on BARK_SERVER (bark CLI env)
   --notifier PATH / CCPACE_NOTIFIER  custom script, JSON on stdin:
     {"event": "threshold|full|delta|pace|reset", "account": "...", "data": {...}}
 """
@@ -59,6 +61,7 @@ import logging
 import os
 import platform
 import random
+import re
 import select
 import shutil
 import signal
@@ -72,8 +75,10 @@ from typing import Any, Literal
 
 import httpx
 
-__version__ = "0.1.1"
-CLI_VERSION = "2.1.220"
+__version__ = "0.2.0"
+CLI_VERSION = "2.1.234"
+CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
+API_VERSION = "2023-06-01"
 PROG = "ccpace"
 LOGGER = logging.getLogger(PROG)
 
@@ -94,11 +99,16 @@ MIN_WATCH_INTERVAL = 60
 WATCH_JITTER_FRAC = 0.10
 DEFAULT_WATCH_THRESHOLD = 80
 WAIT_MODE_CHECK_INTERVAL = 60
-# on fetch errors: honor Retry-After, else exponential backoff in this range
+# on fetch errors with nothing to show: doubling local backoff from this
+# floor, never longer than the poll interval (the CLI itself never sits out
+# a Retry-After; neither does a 15-min poller — the next tick is the retry)
 BACKOFF_BASE_SEC = 60
-BACKOFF_MAX_SEC = 900
 PROFILE_TTL_SEC = 24 * 3600
-CREDITS_TTL_SEC = 5 * 60
+PROFILE_RETRY_SEC = 600  # watch mode retries a MISSING profile this often
+RESET_POLL_GRACE = 5  # seconds past a window reset before the boundary re-poll fires
+# a prepaid balance only moves on a purchase (spend shows in the usage
+# payload's extra_usage); statusline keeps its 5-min TTL, ccpace piggybacks
+CREDITS_TTL_SEC = 3600
 FORECAST_REBUILD_SEC = 3600
 FORECAST_MIN_DAYS = 3
 FORECAST_HALF_LIFE_DAYS = 14.0
@@ -114,7 +124,7 @@ PACE_WARN_MIN_UTIL = 10
 # 7d window-budget strip: one cell per 5h window (7d = 33.6 -> 34 cells,
 # the last a 3h stub); cells right of │ are countable as windows left
 WEEK_STRIP_WIDTH = 34
-WEEK_STRIP_MIN_COLS = 72
+WEEK_STRIP_MIN_COLS = 78
 # bar column offset: tag(5) + space + util(3) + "% " = 11
 ROW_BAR_INDENT = 11
 
@@ -243,10 +253,17 @@ def setup_logging(quiet: bool, verbose: int) -> None:
             else "%(levelname)s [%(name)s] %(message)s"
         ),
     )
+    # -v: our debug + one httpx line per request; the httpcore transport
+    # chatter (start_tls, send_request_headers, ...) only at -vv
     if verbose == 0:
         logging.getLogger("httpx").setLevel(logging.WARNING)
-    elif verbose >= 2:
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+    elif verbose == 1:
+        logging.getLogger("httpx").setLevel(logging.INFO)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+    else:
         logging.getLogger("httpx").setLevel(logging.DEBUG)
+        logging.getLogger("httpcore").setLevel(logging.DEBUG)
 
 
 def log_http(label: str, data: dict, trace: bool = False) -> None:
@@ -329,6 +346,50 @@ def get_token_from_file(cred_file: Path) -> str | None:
         LOGGER.debug("failed to parse %s: %s", cred_file, e)
 
     return None
+
+
+def read_credential_meta(cred_file: Path) -> dict[str, str]:
+    """The identity the CLI persists next to the token: subscriptionType
+    ("max"/"pro"/...) and rateLimitTier ("default_claude_max_20x", ...).
+
+    Claude Code writes both from the profile at login and refreshes them
+    itself, so this is a zero-request source of the tier that is at least
+    as fresh as anything we could fetch. Empty dict when absent (older
+    files, setup-token credentials)."""
+    try:
+        oauth = json.loads(cred_file.read_text()).get("claudeAiOauth") or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+    meta = {}
+    for key in ("subscriptionType", "rateLimitTier"):
+        if isinstance(oauth.get(key), str) and oauth[key]:
+            meta[key] = oauth[key]
+    return meta
+
+
+def profile_with_credential_tier(profile: dict | None, cred_file: Path) -> dict | None:
+    """Overlay the credential file's tier onto a profile (or synthesize one).
+
+    profile.cache may be a day old; the credentials file is rewritten by the
+    CLI itself, so its rateLimitTier wins for the tier chip. With no
+    profile at all (fetch failed, throttled, offline) a minimal one is
+    synthesized so the account still renders with its tier — the org uuid
+    and subscription dates stay unknown until a real profile lands."""
+    meta = read_credential_meta(cred_file)
+    if not meta:
+        return profile
+    merged = json.loads(json.dumps(profile)) if profile else {"_from_credentials": True}
+    org = merged.setdefault("organization", {}) or {}
+    merged["organization"] = org
+    if tier := meta.get("rateLimitTier"):
+        org["rate_limit_tier"] = tier
+    if sub := meta.get("subscriptionType"):
+        org.setdefault("organization_type", f"claude_{sub}")
+        acct = merged.setdefault("account", {}) or {}
+        merged["account"] = acct
+        acct.setdefault("has_claude_max", sub == "max")
+        acct.setdefault("has_claude_pro", sub == "pro")
+    return merged
 
 
 def get_all_credentials(
@@ -527,8 +588,10 @@ def refresh_token_if_needed(cred_file: Path, force: bool = False) -> str | None:
 def oauth_headers(token: str) -> dict[str, str]:
     """Headers for the claude-cli client path (usage, client_data, settings).
 
-    Pinned from the 2026-07-21 trace; endpoints not re-observed in the
-    2026-08-04 capture keep this shape.
+    Matches the v2.1.234 axios `fs` client default-auth header set: the CLI
+    call site for /api/oauth/usage sends only Content-Type, and the wrapper
+    injects Authorization + anthropic-beta: oauth-2025-04-20 + the
+    `claude-cli/<ver> (external, cli)` User-Agent.
     """
     return {
         "Accept": "application/json, text/plain, */*",
@@ -539,12 +602,31 @@ def oauth_headers(token: str) -> dict[str, str]:
     }
 
 
+def teleport_headers(token: str, org_uuid: str) -> dict[str, str]:
+    """Headers for teleport-org calls (prepaid/credits, org billing).
+
+    Traced from v2.1.234 `auth: "teleport-org"`: Authorization + Content-Type
+    + anthropic-version + anthropic-client-platform + x-organization-uuid, and
+    NO anthropic-beta. The auth layer also substitutes the real org UUID for
+    the literal `:orgUUID` in the path (we interpolate at the call site).
+    """
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "anthropic-version": API_VERSION,
+        "anthropic-client-platform": CLIENT_PLATFORM,
+        "x-organization-uuid": org_uuid,
+        "User-Agent": USER_AGENT_CLI,
+    }
+
+
 def axios_headers(
     token: str, content_type: bool = False, no_cache: bool = False
 ) -> dict[str, str]:
     """Headers for the CLI's axios oauth client (profile, roles): no beta.
 
-    As traced from claude-cli 2.1.220: profile sends
+    As traced from claude-cli 2.1.234: profile sends
     content-type + cache-control, roles sends neither.
     """
     headers = {
@@ -703,27 +785,109 @@ def data_root() -> Path:
     return home / "statusline"
 
 
+def env_account_tag() -> str:
+    """The account this session IS, when a runner says so — statusline's rule.
+
+    The bare `.credentials.json` carries no identity of its own (tokens
+    rotate; deva bind-mounts a different account's file over the same
+    ~/.claude per container), so the runner names it:
+      STATUSLINE_ACCOUNT   explicit label, wins always
+      DEVA_AUTH_TAG        deva >= 0.18: auth-file-<stem> -> <stem>;
+                           auth-default = single-account -> ""
+      DEVA_AUTH_DETAILS    pre-0.18 deva: "credentials-file (/p/<stem>.credentials.json)"
+    Sanitized exactly like statusline (filesystem charset, 24 chars, no
+    dot-leading names) so both tools land in the same accounts/<tag>/.
+    "" means untagged: the store root."""
+    tag = ""
+    if explicit := os.getenv("STATUSLINE_ACCOUNT"):
+        tag = explicit
+    elif (deva := os.getenv("DEVA_AUTH_TAG")) and deva != "auth-default":
+        tag = deva.removeprefix("auth-file-")
+    elif os.getenv("DEVA_AUTH_METHOD") == "credentials-file" and (
+        details := os.getenv("DEVA_AUTH_DETAILS")
+    ):
+        inner = details.split("(", 1)[-1].rstrip(")").split()[-1]
+        tag = get_alias_from_label(inner)
+    tag = re.sub(r"[^A-Za-z0-9._-]", "", tag)[:24]
+    return "" if tag.startswith(".") else tag
+
+
+def store_tag(alias: str) -> str:
+    """Directory key under accounts/ for a credential alias.
+
+    A named file (`work.credentials.json`) is its own account: `work`.
+    The default file (alias "") is whoever the runner says (env_account_tag),
+    else the untagged single-account layout at the store root ("")."""
+    return alias or env_account_tag()
+
+
 def account_dir(alias: str) -> Path:
-    """Where this account's samples and caches live (write target)."""
-    return data_root() / "accounts" / alias
+    """Where this account's caches and samples live (write target) — the
+    same directory statusline uses for the same account, or the two tools
+    never share a fetch."""
+    tag = store_tag(alias)
+    return data_root() / "accounts" / tag if tag else data_root()
 
 
-def usage_store_paths(alias: str, log_dir: Path | None = None) -> list[Path]:
-    """Candidate JSONL sample stores, richest first.
-
-    Reads every place history may live: the shared store keyed by alias,
-    statusline's deva-tag variant (auth-file-<alias>), and the unscoped
-    single-account layout. Without a store there is no per-window
-    history to draw, only unknowns.
-    """
+def own_store_paths(alias: str, log_dir: Path | None = None) -> list[Path]:
+    """The account's own JSONL stores, richest first: the shared store
+    keyed by its tag, statusline's deva-tag variant (auth-file-<alias>),
+    and the unscoped single-account layout."""
     root = data_root()
     paths = []
     if log_dir:
         paths.append(log_dir / "usage.jsonl")
-    for scope in (f"accounts/{alias}", f"accounts/auth-file-{alias}", ""):
+    scopes = []
+    if tag := store_tag(alias):
+        scopes.append(f"accounts/{tag}")
+    if alias:
+        scopes.append(f"accounts/auth-file-{alias}")
+    for scope in scopes + [""]:
         base = root / scope if scope else root
         paths.extend([base / "usage.jsonl.1", base / "usage.jsonl"])
     return [p for p in paths if p.is_file()]
+
+
+def all_store_paths(log_dir: Path | None = None) -> list[Path]:
+    """Every JSONL store under the data root: root + accounts/*/ (+ log_dir).
+
+    History is keyed by account uuid, not by directory: the same account
+    lands in different places depending on who fetched (host statusline
+    untagged -> root; a deva-tagged container -> accounts/<tag>/; an
+    older ccpace -> accounts/<alias>/). Reading them all and partitioning
+    by uuid is the only layout-proof way to find a week's samples."""
+    root = data_root()
+    dirs = [root]
+    try:
+        dirs += sorted(d for d in (root / "accounts").iterdir() if d.is_dir())
+    except OSError:
+        pass
+    paths = []
+    if log_dir:
+        paths.append(log_dir / "usage.jsonl")
+    for base in dirs:
+        paths.extend([base / "usage.jsonl.1", base / "usage.jsonl"])
+    return [p for p in paths if p.is_file()]
+
+
+def load_account_history(
+    alias: str, account_uuid: str, log_dir: Path | None = None
+) -> list[tuple[float, float, float, str]]:
+    """The samples that belong to this account, wherever they were written.
+
+    With the account uuid (from its profile) every store is read and rows
+    are partitioned by uuid — the docs/data.md contract for readers.
+    Without it (no profile yet) only the account's own stores are trusted,
+    unpartitioned: narrower, but never another account's history."""
+    if account_uuid:
+        rows = load_usage_samples(all_store_paths(log_dir))
+        return [r for r in rows if r[3] == account_uuid]
+    return load_usage_samples(own_store_paths(alias, log_dir))
+
+
+# parsed stores, keyed by path -> (mtime, size, rows): watch mode re-reads
+# a 20 MB history every frame otherwise; a store only ever grows/rotates
+_SAMPLE_CACHE: dict[Path, tuple[float, int, list[tuple[float, float, float, str]]]] = {}
 
 
 def load_usage_samples(
@@ -741,6 +905,12 @@ def load_usage_samples(
     out: list[tuple[float, float, float, str]] = []
     for path in paths:
         try:
+            st = path.stat()
+            hit = _SAMPLE_CACHE.get(path)
+            if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
+                out.extend(hit[2])
+                continue
+            rows: list[tuple[float, float, float, str]] = []
             with path.open(encoding="utf-8") as f:
                 for line in f:
                     try:
@@ -763,10 +933,25 @@ def load_usage_samples(
                     uuid = (row.get("user") or {}).get("uuid") or (
                         (row.get("account") or {}).get("account") or {}
                     ).get("uuid") or ""
-                    out.append((float(ts), reset.timestamp(), float(util), uuid))
+                    rows.append((float(ts), reset.timestamp(), float(util), uuid))
+            _SAMPLE_CACHE[path] = (st.st_mtime, st.st_size, rows)
+            out.extend(rows)
         except OSError:
             continue
     return out
+
+
+def window_period_start(entry: dict) -> float:
+    """The 7d period's start on the 5-min grid the window keys use.
+
+    `resets_at` is jittered by the API (15:59:59.76 one fetch, 16:00:00.47
+    the next); a raw `reset - 7d` can land a hair AFTER slot 0's true start
+    and floor that window to slot -1 — the first cell of the week silently
+    lost. Snapping to the same grid the keys are rounded to keeps every
+    slot boundary exact.
+    """
+    raw = (entry["reset_dt"] - timedelta(seconds=entry["length"])).timestamp()
+    return float(round(raw / 300) * 300)
 
 
 def build_window_history(
@@ -965,7 +1150,7 @@ def fetch_prepaid_credits(token: str, org_uuid: str, alias: str) -> dict | None:
     try:
         resp = httpx.get(
             f"https://api.anthropic.com/api/oauth/organizations/{org_uuid}/prepaid/credits",
-            headers={**oauth_headers(token), "x-organization-uuid": org_uuid},
+            headers=teleport_headers(token, org_uuid),
             timeout=5,
         )
         resp.raise_for_status()
@@ -998,18 +1183,74 @@ def fetch_prepaid_credits(token: str, org_uuid: str, alias: str) -> dict | None:
 SHARED_USAGE_FRESH_SEC = 60
 
 
-def read_shared_usage_cache(alias: str, max_age: int = SHARED_USAGE_FRESH_SEC) -> dict | None:
-    """A fresh usage.cache is a fetch someone already made — use it."""
+def read_shared_usage_cache(
+    alias: str, max_age: int | None = SHARED_USAGE_FRESH_SEC
+) -> dict | None:
+    """A fresh usage.cache is a fetch someone already made — use it.
+
+    `max_age=None` returns the cache at any age (the throttled fallback:
+    stale numbers with a badge beat a blank frame)."""
     path = account_dir(alias) / "usage.cache"
     try:
         data = json.loads(path.read_text())
         age = datetime.now(timezone.utc).timestamp() - data.get("fetched_at", 0)
-        if 0 <= age <= max_age:
+        if age >= 0 and (max_age is None or age <= max_age):
             data["_from_shared_cache"] = True
+            data["_cache_age"] = int(age)
             return data
     except (OSError, json.JSONDecodeError, ValueError):
         pass
     return None
+
+
+# Fetch failures are ccpace's own business, held in memory for the run:
+# {alias: {"at": epoch, "code": "429"|"000"|..., "retry_after": secs|None}}.
+# We deliberately do NOT write statusline's usage.err: a Retry-After of an
+# hour written there freezes every statusline render on the machine, and
+# an hour-long lockout is not how the CLI itself treats this endpoint (it
+# fetches when it needs to and shows an error if that fails). The last
+# usage.cache is what we show meanwhile, badged with its age and the reason.
+_FETCH_FAILURES: dict[str, dict[str, Any]] = {}
+
+
+def note_fetch_failure(alias: str, code: int | str, retry_after: str | None = None) -> None:
+    ra = None
+    if (retry_after or "").strip().isdigit():
+        ra = int(retry_after.strip())
+    _FETCH_FAILURES[alias] = {
+        "at": int(datetime.now(timezone.utc).timestamp()),
+        "code": str(code),
+        "retry_after": ra,
+    }
+
+
+def clear_fetch_failure(alias: str) -> None:
+    _FETCH_FAILURES.pop(alias, None)
+
+
+def last_fetch_failure(alias: str) -> dict[str, Any] | None:
+    return _FETCH_FAILURES.get(alias)
+
+
+def stale_usage(alias: str) -> dict | None:
+    """The last good usage.cache at any age, badged with why it is stale."""
+    data = read_shared_usage_cache(alias, max_age=None)
+    if not data:
+        return None
+    err = last_fetch_failure(alias) or {}
+    data["_stale"] = {"age": data.get("_cache_age", 0), "code": str(err.get("code") or "")}
+    return data
+
+
+def pooled_usage(alias: str) -> tuple[str, dict | None]:
+    """The pool's answer before any request goes out.
+
+    ("fresh", data)   someone fetched within SHARED_USAGE_FRESH_SEC — use it
+    ("fetch", None)   clear to hit the API
+    """
+    if data := read_shared_usage_cache(alias):
+        return "fresh", data
+    return "fetch", None
 
 
 def write_shared_usage_cache(alias: str, usage: dict) -> None:
@@ -1052,18 +1293,28 @@ def write_shared_profile_cache(alias: str, profile: dict) -> None:
 def attach_prepaid(
     data: dict | None, profile: dict | None, token: str | None, label: str
 ) -> None:
-    """Attach the prepaid balance to the usage payload for display."""
+    """Attach the prepaid balance to the usage payload for display.
+
+    Skipped when the usage payload already says the org never enabled
+    credits (`extra_usage.credits_ever_enabled` false): there is no balance
+    to show and the request is pure API load."""
+    if data is None:
+        return
+    extra = data.get("extra_usage") or {}
+    if extra.get("credits_ever_enabled") is False:
+        return
     org_uuid = ((profile or {}).get("organization") or {}).get("uuid") or ""
-    if data is not None and org_uuid and token:
+    if org_uuid and token:
         credits = fetch_prepaid_credits(token, org_uuid, get_alias_from_label(label))
         if credits:
             data["_prepaid"] = credits
 
 
 def burn_glyph(cost: float) -> str:
-    """Height ∝ 7d points a window cost. Sub-1% reads as idle, not as fill."""
+    """Height ∝ 7d points a window cost. Sub-1% is a zero-height bar (ˍ, on
+    the baseline), not a fill."""
     if cost < 1:
-        return "·"
+        return "ˍ"
     for hi, glyph in ((2, "▁"), (4, "▂"), (6, "▃"), (8, "▄"), (11, "▅"),
                       (15, "▆"), (20, "▇")):
         if cost <= hi:
@@ -1082,19 +1333,20 @@ def format_window_ledger(
 ) -> str:
     """The 7d period as its 5h windows: what each cost, and what is left.
 
-    One cell per 5h slot on a fixed grid from the period start:
+    One cell per 5h slot on a fixed grid from the period start, a thin gap
+    at each local midnight so days read as clusters:
       ▁▂▃▄▅▆▇█  a window that ran, height ∝ 7d points it burned
-      ·         a window that ran nothing (store was watching, saw no burn)
+      ˍ         a window that ran nothing (store was watching, saw no burn)
       ░         unknown — outside the sample store's coverage
       ▮         the window you are in now
-      ▫         a window still ahead of you
+      ▯         a window still ahead of you (the hollow of ▮: an empty slot)
       ×         a window the 7d pool will not cover at the current pace
       ┤         access ends here — the strip stops, those windows are not yours
     Unknown and idle are deliberately different glyphs: drawing a gap in
     the record as an idle session is the one lie this surface must not
     tell.
     """
-    period_start = (entry["reset_dt"] - timedelta(seconds=entry["length"])).timestamp()
+    period_start = window_period_start(entry)
     now_ts = now.timestamp()
     now_slot = int((now_ts - period_start) // WINDOW_5H_SEC)
     dry_slot = None
@@ -1109,7 +1361,18 @@ def format_window_ledger(
         end_slot = max(int((off + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC), now_slot + 1)
 
     cells: list[tuple[str, str]] = []  # (glyph, role)
+    prev_day = None
     for i in range(width):
+        # a thin gap where a local calendar day begins, in HISTORY only:
+        # days read as clusters — and a day that held five windows shows
+        # it — without a ruler; the run from ▮ on stays contiguous (a gap
+        # right after the now-marker read as a phantom cell). Same rhythm
+        # as claude-code-statusline's week row.
+        if i < now_slot:
+            day = datetime.fromtimestamp(period_start + i * WINDOW_5H_SEC).date()
+            if prev_day is not None and day != prev_day:
+                cells.append((" ", "gap"))
+            prev_day = day
         if end_slot is not None and i >= end_slot:
             cells.append(("┤", "end"))
             break
@@ -1119,9 +1382,9 @@ def format_window_ledger(
                 glyph = burn_glyph(costs[i])
                 # a sampled window under 1% and an idle one both mean "cost
                 # me nothing" — one glyph, one tint, no colour-only meaning
-                cells.append((glyph, "idle" if glyph == "·" else "burn"))
+                cells.append((glyph, "idle" if glyph == "ˍ" else "burn"))
             elif span and span[0] <= slot_start + WINDOW_5H_SEC and slot_start <= span[1]:
-                cells.append(("·", "idle"))
+                cells.append(("ˍ", "idle"))
             else:
                 cells.append(("░", "unknown"))
         elif i == now_slot:
@@ -1129,7 +1392,7 @@ def format_window_ledger(
         elif dry_slot is not None and i >= dry_slot:
             cells.append(("×", "dry"))
         else:
-            cells.append(("▫", "future"))
+            cells.append(("▯", "future"))
 
     if not color or not supports_color():
         return "".join(g for g, _ in cells)
@@ -1142,6 +1405,7 @@ def format_window_ledger(
         "future": "",
         "dry": RED,
         "end": YELLOW,
+        "gap": "",
     }
     out, current = [], None
     for glyph, role in cells:
@@ -1150,6 +1414,30 @@ def format_window_ledger(
             current = role
         out.append(glyph)
     return "".join(out) + RESET
+
+
+def format_stale_badge(stale: dict) -> str:
+    """`(stale 12m · !429)` — statusline's !badge vocabulary; the next
+    attempt is the next poll, which the watch footer already counts down."""
+    code = str(stale.get("code") or "")
+    def short(secs: int) -> str:
+        return f"{secs}s" if secs < 60 else format_duration(secs)
+
+    if code == "idle":
+        # not a failure: nothing happened in Claude Code since these
+        # numbers, so nothing was asked — the age says how long
+        return f"(idle {short(int(stale.get('age', 0)))})"
+    if code == "429":
+        why = "!429"
+    elif code in ("401", "403"):
+        why = "!auth"
+    elif code.startswith("5"):
+        why = "!5xx"
+    elif code == "000":
+        why = "!net"
+    else:
+        why = "!"
+    return f"(stale {short(int(stale.get('age', 0)))} · {why})"
 
 
 def format_duration(seconds: int) -> str:
@@ -1397,19 +1685,37 @@ def info_usage_single(
             trace,
         )
 
+        clear_fetch_failure(get_alias_from_label(label))
         return EXIT_OK, data
 
     except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        LOGGER.error("%s: request failed (%d)", label, status)
-        try:
-            LOGGER.error("%s: %s", label, e.response.text)
-        except Exception:
-            pass
+        note_usage_http_error(label, e)
         return EXIT_RUNTIME, None
     except httpx.HTTPError as e:
-        LOGGER.error("%s: %s: %s", label, type(e).__name__, e)
+        note_usage_transport_error(label, e)
         return EXIT_RUNTIME, None
+
+
+def note_usage_http_error(label: str, e: httpx.HTTPStatusError) -> None:
+    """Log a non-2xx usage response and remember it for the stale badge."""
+    status = e.response.status_code
+    retry_after = e.response.headers.get("retry-after")
+    note_fetch_failure(get_alias_from_label(label), status, retry_after)
+    LOGGER.error(
+        "%s: request failed (%d)%s",
+        label,
+        status,
+        f", Retry-After {retry_after}s" if retry_after else "",
+    )
+    body = getattr(e.response, "text", "")
+    if body:
+        LOGGER.error("%s: %s", label, body)
+
+
+def note_usage_transport_error(label: str, e: httpx.HTTPError) -> None:
+    """Log a transport failure (DNS, TLS, timeout) and remember it."""
+    LOGGER.error("%s: %s: %s", label, type(e).__name__, e)
+    note_fetch_failure(get_alias_from_label(label), "000")
 
 
 async def fetch_profile_async(
@@ -1429,14 +1735,21 @@ async def fetch_profile_async(
 
 async def fetch_all_profiles_async(
     credentials: list[tuple[Path, str]],
+    max_age: int = PROFILE_TTL_SEC,
 ) -> dict[str, dict | None]:
-    """Fetch profiles for all credentials sequentially."""
+    """Fetch profiles for all credentials sequentially.
+
+    `max_age` bounds how stale a shared profile.cache may be before we
+    re-hit the API. The tier is NOT a reason to shorten it — it is overlaid
+    from the credentials file (profile_with_credential_tier); the profile is
+    fetched for the org uuid and subscription dates, which do not move.
+    """
     results = {}
     async with httpx.AsyncClient(limits=HTTP_LIMITS, timeout=HTTP_TIMEOUT) as client:
         for cred_path, token in credentials:
             label = str(cred_path)
             alias = get_alias_from_label(label)
-            if profile := read_shared_profile_cache(alias):
+            if profile := read_shared_profile_cache(alias, max_age=max_age):
                 results[label] = profile
                 continue
             profile = await fetch_profile_async(client, token, label)
@@ -1481,18 +1794,14 @@ async def info_usage_single_async(
             trace,
         )
 
+        clear_fetch_failure(get_alias_from_label(label))
         return EXIT_OK, data
 
     except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        LOGGER.error("%s: request failed (%d)", label, status)
-        try:
-            LOGGER.error("%s: %s", label, e.response.text)
-        except Exception:
-            pass
+        note_usage_http_error(label, e)
         return EXIT_RUNTIME, None
     except httpx.HTTPError as e:
-        LOGGER.error("%s: %s: %s", label, type(e).__name__, e)
+        note_usage_transport_error(label, e)
         return EXIT_RUNTIME, None
 
 
@@ -1505,13 +1814,16 @@ async def fetch_all_usage_async(
         for cred_path, token in credentials:
             label = str(cred_path)
             alias = get_alias_from_label(label)
-            if shared := read_shared_usage_cache(alias):
-                results[label] = (EXIT_OK, shared)
+            state, pooled = pooled_usage(alias)
+            if state == "fresh":
+                results[label] = (EXIT_OK, pooled)
                 continue
             code, data = await info_usage_single_async(client, token, label, trace)
-            results[label] = (code, data)
             if code == EXIT_OK and data:
                 write_shared_usage_cache(alias, data)
+            elif stale := stale_usage(alias):
+                code, data = EXIT_OK, stale
+            results[label] = (code, data)
     return results
 
 
@@ -1555,13 +1867,9 @@ def run_notifier(
 
 
 def has_command(cmd: str) -> bool:
-    """Check if command exists in PATH."""
-    return (
-        subprocess.run(
-            ["command", "-v", cmd], capture_output=True, check=False
-        ).returncode
-        == 0
-    )
+    """Is `cmd` on PATH? (`command -v` is a shell builtin — exec'ing it
+    raised FileNotFoundError and took the whole watch loop down on Linux.)"""
+    return shutil.which(cmd) is not None
 
 
 def notify_macos(title: str, message: str) -> None:
@@ -1628,15 +1936,35 @@ def notify_ntfy(url: str, title: str, message: str, event: str) -> None:
         LOGGER.warning("ntfy push failed: %s", e)
 
 
+BARK_DEFAULT_SERVER = "https://api.day.app"
+
+
+def resolve_bark_url(flag: str | None) -> str | None:
+    """The bark endpoint (`<server>/<key>`) from, in order: an explicit
+    URL (`--bark URL` / `CCPACE_BARK`), else the bark CLI's own env —
+    `BARK_KEY` on `BARK_SERVER` (default api.day.app) — when `--bark`
+    is given bare. None when nothing is configured."""
+    if flag:
+        return flag
+    if key := os.getenv("BARK_KEY"):
+        server = (os.getenv("BARK_SERVER") or BARK_DEFAULT_SERVER).rstrip("/")
+        return f"{server}/{key}"
+    return None
+
+
 def notify_bark(url: str, title: str, message: str, event: str) -> None:
-    """Push via bark: POST to https://api.day.app/KEY/title/body."""
+    """Push via bark: POST to <server>/KEY/title/body. `BARK_GROUP` and
+    `BARK_ICON` (the bark CLI's env) ride along when set."""
     from urllib.parse import quote
 
     _, level = EVENT_SEVERITY.get(event, ("default", "active"))
+    params = {"level": level, "group": os.getenv("BARK_GROUP") or PROG}
+    if icon := os.getenv("BARK_ICON"):
+        params["icon"] = icon
     try:
         httpx.post(
             f"{url.rstrip('/')}/{quote(title)}/{quote(message)}",
-            params={"level": level, "group": PROG},
+            params=params,
             timeout=10,
         ).raise_for_status()
     except httpx.HTTPError as e:
@@ -1678,7 +2006,23 @@ def send_notification(
     Channels: ntfy/bark push (NOTIFY_CHANNELS, additive), then either a
     custom notifier script (JSON on stdin, replaces system notify) or
     the OS notification as the local channel.
+
+    A notification is a side channel: whatever fails inside — a missing
+    binary, a broken notifier, a dead push server — is logged, never
+    raised into the watch loop.
     """
+    try:
+        _send_notification(event, account, data, notifier)
+    except Exception as e:  # noqa: BLE001 — the loop must outlive its messengers
+        LOGGER.warning("notification %s for %s failed: %s: %s", event, account, type(e).__name__, e)
+
+
+def _send_notification(
+    event: str,
+    account: str,
+    data: dict,
+    notifier: str | None = None,
+) -> None:
     payload = {"event": event, "account": account, "data": data}
     title = f"Claude {event.title()}"
     message = format_notification_message(event, account, data)
@@ -1792,8 +2136,8 @@ def print_window_ledger_row(
     """
     now = now or datetime.now(timezone.utc)
     if samples is None:
-        samples = load_usage_samples(usage_store_paths(alias, log_dir)) if alias else []
-    period_start = (entry["reset_dt"] - timedelta(seconds=entry["length"])).timestamp()
+        samples = load_account_history(alias, "", log_dir)
+    period_start = window_period_start(entry)
     costs, span = build_window_history(samples, period_start, WEEK_STRIP_WIDTH)
     ledger = format_window_ledger(
         entry, costs, span, now, color=use_color, access_end=access_end
@@ -1832,7 +2176,7 @@ def format_usage_display(
         5h     22% ██░░░░░░░░  4h 11m   @20:59        +3%  1.4x
         7d     80% ████████▓░  3d 20h   @Thu 23 23:59       1.8x
         fable  97% █████████▓  3d 20h   @Wed 22 23:59       2.2x
-                   ▁▂▄·▁▃█▂··▁▅▃▂·▁▂▄▃▁·▂▃▄▂▁▮▫▫××××
+                   ▁▂▄ˍ▁▃█▂ˍˍ▁▅▃▂ˍ▁▂▄▃▁ˍ▂▃▄▂▁▮▯▯××××
          !  7d pace 1.8x - cap ~Thu 23 09:00, 2d 15h before reset; then extra usage billing
                    budget: ~19 windows left · 1.1%/window stays even
     """
@@ -1854,7 +2198,7 @@ def format_usage_display(
     # gets an unmistakable edge. Alias color = worst pace in the block,
     # so "is anything hot?" is answered before a single row is read.
     if label:
-        alias = get_alias_from_label(label)
+        alias = display_alias(label)
         segs: list[tuple[str, str]] = []  # (plain, colored)
         if tier_plain := get_account_tier_prefix(profile, False):
             segs.append((tier_plain, get_account_tier_prefix(profile, use_color)))
@@ -1868,7 +2212,13 @@ def format_usage_display(
         else:
             alias_color = BOLD
         segs.append((alias, f"{alias_color}{alias}{RESET}"))
-        if cached:
+        # provenance rides the rule too: a frozen 100% account says
+        # (cached); one whose last fetch failed says how old the numbers
+        # are and why (the footer counts down to the retry)
+        if stale := data.get("_stale"):
+            badge = format_stale_badge(stale)
+            segs.append((badge, f"{YELLOW}{badge}{RESET}"))
+        elif cached:
             segs.append(("(cached)", f"{DIM}(cached){RESET}"))
         # sub/period note rides the rule; when it truncates the budget it
         # turns yellow — that date is now the number the block runs on
@@ -1990,9 +2340,12 @@ def format_usage_display(
             print(f"{'':4s} {'':10s}  {note}")
 
     # one sample load feeds both consumers: the ledger draws where the
-    # week went, the forecast projects where the rest of it goes
+    # week went, the forecast projects where the rest of it goes. History
+    # is the ACCOUNT's (partitioned by uuid across every store), not the
+    # directory's — where a sample landed depends on who fetched it.
     alias = get_alias_from_label(label) if label else ""
-    samples = load_usage_samples(usage_store_paths(alias, log_dir)) if alias else []
+    acct_uuid = ((profile or {}).get("account") or {}).get("uuid") or ""
+    samples = load_account_history(alias, acct_uuid, log_dir) if label else []
 
     if seven_entry and shutil.get_terminal_size().columns >= WEEK_STRIP_MIN_COLS:
         print_window_ledger_row(
@@ -2004,8 +2357,7 @@ def format_usage_display(
         )
 
     advice = build_advice(data, windows, access)
-    if seven_entry and samples and alias:
-        acct_uuid = ((profile or {}).get("account") or {}).get("uuid") or ""
+    if seven_entry and samples and label:
         forecast = weekday_burn_forecast(samples, acct_uuid, now)
         if forecast:
             write_forecast_cache(alias, forecast)
@@ -2053,9 +2405,13 @@ def info_usage(
             print(json.dumps(output, indent=2))
             return EXIT_OK
 
-        # profiles carry tier + subscription period; watch mode already
-        # fetches them, so the two surfaces show the same header
+        # profiles carry the org uuid + subscription period; the tier chip
+        # is overlaid from the credentials file, same as watch mode
         profiles = asyncio.run(fetch_all_profiles_async(credentials))
+        profiles = {
+            str(path): profile_with_credential_tier(profiles.get(str(path)), path)
+            for path, _ in credentials
+        }
 
         exit_code = EXIT_OK
         for cred_path, token in credentials:
@@ -2077,21 +2433,33 @@ def info_usage(
     if raw:
         cred_path, token = credentials[0]
         label = str(cred_path)
-        code, data = info_usage_single(token, label, raw, trace)
+        state, data = pooled_usage(get_alias_from_label(label))
+        if state == "fetch":
+            code, data = info_usage_single(token, label, raw, trace)
+            if code == EXIT_OK and data:
+                write_shared_usage_cache(get_alias_from_label(label), data)
         if data:
             print(json.dumps({label: data}, indent=2))
         return EXIT_OK
 
     cred_path, token = credentials[0]
     alias = get_alias_from_label(str(cred_path))
-    if data := read_shared_usage_cache(alias):
+    state, data = pooled_usage(alias)
+    if state == "fresh":
         code = EXIT_OK
     else:
         code, data = info_usage_single(token, str(cred_path), raw, trace)
         if code == EXIT_OK and data:
             write_shared_usage_cache(alias, data)
+        elif stale := stale_usage(alias):
+            code, data = EXIT_OK, stale
     if data:
         profiles = asyncio.run(fetch_all_profiles_async(credentials))
+        profiles = {
+            str(cred_path): profile_with_credential_tier(
+                profiles.get(str(cred_path)), cred_path
+            )
+        }
         attach_prepaid(data, profiles.get(str(cred_path)), token, str(cred_path))
         format_usage_display(data, str(cred_path), profile=profiles.get(str(cred_path)))
         if not no_log:
@@ -2129,31 +2497,92 @@ def get_max_utilization(data: dict, include_model_specific: bool = False) -> int
 
 
 def get_earliest_reset(data: dict) -> datetime | None:
-    """Get earliest reset time from usage data."""
+    """Earliest upcoming reset across every window that can bind the account.
+
+    Includes the model-scoped weekly limits (fable/opus/sonnet and any
+    `limits[].scope`) so that when the binding window is one of those — not
+    the plain 5h/7d — the watch loop still re-polls at the right boundary.
+    """
     now = datetime.now(timezone.utc)
     resets = []
 
-    five = data.get("five_hour") or {}
-    five_reset = five.get("resets_at")
-    if five_reset:
-        try:
-            dt = datetime.fromisoformat(five_reset.replace("Z", "+00:00"))
-            if dt > now:
-                resets.append(dt)
-        except (ValueError, AttributeError):
-            pass
+    candidates = [
+        (data.get("five_hour") or {}).get("resets_at"),
+        (data.get("seven_day") or {}).get("resets_at"),
+        (data.get("seven_day_opus") or {}).get("resets_at"),
+        (data.get("seven_day_sonnet") or {}).get("resets_at"),
+    ]
+    candidates += [
+        lim.get("resets_at")
+        for lim in (data.get("limits") or [])
+        if lim.get("scope")
+    ]
 
-    seven = data.get("seven_day") or {}
-    seven_reset = seven.get("resets_at")
-    if seven_reset:
+    for value in candidates:
+        if not value:
+            continue
         try:
-            dt = datetime.fromisoformat(seven_reset.replace("Z", "+00:00"))
-            if dt > now:
-                resets.append(dt)
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
-            pass
+            continue
+        if dt > now:
+            resets.append(dt)
 
     return min(resets) if resets else None
+
+
+def claude_activity_ts() -> float | None:
+    """When Claude Code last did something on this machine, from files it
+    keeps under its config dir: history.jsonl (a prompt was sent) and the
+    statusline's per-session render state (a frame was drawn — in any
+    container sharing this ~/.claude). None when neither exists: unknown,
+    and unknown never blocks a fetch."""
+    config_dir = os.getenv("CLAUDE_CONFIG_DIR")
+    home = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+    newest: float | None = None
+    def see(ts: float) -> None:
+        nonlocal newest
+        newest = ts if newest is None or ts > newest else newest
+    try:
+        see((home / "history.jsonl").stat().st_mtime)
+    except OSError:
+        pass
+    try:
+        with os.scandir(data_root() / "sessions") as it:
+            for entry in it:
+                try:
+                    see(entry.stat().st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return newest
+
+
+def idle_since(last_fetch_at: float | None, next_reset: datetime | None) -> bool:
+    """Should this cycle skip the request? Yes when we fetched before, no
+    window reset has passed since, and Claude Code has done nothing since
+    that fetch — the numbers cannot have moved except by the clock, and the
+    clock's only events (resets) are watched separately. A fixed-interval
+    poll of an idle account is the request that only ever finds what it
+    already knows (and keeps the shared bucket warm for a 429)."""
+    if last_fetch_at is None:
+        return False
+    if next_reset is not None and next_reset.timestamp() <= datetime.now(timezone.utc).timestamp():
+        return False
+    activity = claude_activity_ts()
+    if activity is None:
+        return False
+    return activity <= last_fetch_at
+
+
+def idle_usage(alias: str) -> dict | None:
+    """The last usage.cache at any age, badged idle (not a failure)."""
+    data = read_shared_usage_cache(alias, max_age=None)
+    if not data:
+        return None
+    data["_stale"] = {"age": data.get("_cache_age", 0), "code": "idle"}
+    return data
 
 
 def fetch_or_use_cache(
@@ -2191,12 +2620,29 @@ def fetch_or_use_cache(
         return None, False, EXIT_RUNTIME
 
     alias = get_alias_from_label(label)
-    if shared := read_shared_usage_cache(alias):
-        return shared, False, EXIT_OK
+    state, pooled = pooled_usage(alias)
+    if state == "fresh":
+        LAST_FETCH_AT[label] = float(pooled.get("fetched_at") or datetime.now(timezone.utc).timestamp())
+        return pooled, False, EXIT_OK
+    if label not in FORCE_FETCH and idle_since(LAST_FETCH_AT.get(label), LAST_RESET.get(label)):
+        if idle := idle_usage(alias):
+            return idle, True, EXIT_OK
     code, data = info_usage_single(token, label, False, trace)
     if code == EXIT_OK and data:
         write_shared_usage_cache(alias, data)
-    return data, False, code
+        LAST_FETCH_AT[label] = datetime.now(timezone.utc).timestamp()
+        LAST_RESET[label] = get_earliest_reset(data)
+        return data, False, code
+    if stale := stale_usage(alias):
+        return stale, True, EXIT_OK
+    return None, False, code
+
+
+# per-account memory of the watch loop: when we last fetched, and the next
+# reset that fetch announced — the two facts idle_since() needs
+LAST_FETCH_AT: dict[str, float] = {}
+LAST_RESET: dict[str, datetime | None] = {}
+FORCE_FETCH: set[str] = set()  # labels whose next cycle must ask (r pressed)
 
 
 async def fetch_all_with_cache_async(
@@ -2240,13 +2686,25 @@ async def fetch_all_with_cache_async(
                 continue
 
             alias = get_alias_from_label(label)
-            if shared := read_shared_usage_cache(alias):
-                results[label] = (shared, False, EXIT_OK)
+            state, pooled = pooled_usage(alias)
+            if state == "fresh":
+                LAST_FETCH_AT[label] = float(pooled.get("fetched_at") or datetime.now(timezone.utc).timestamp())
+                results[label] = (pooled, False, EXIT_OK)
                 continue
+            if label not in FORCE_FETCH and idle_since(LAST_FETCH_AT.get(label), LAST_RESET.get(label)):
+                if idle := idle_usage(alias):
+                    results[label] = (idle, True, EXIT_OK)
+                    continue
             code, data = await info_usage_single_async(client, token, label, trace)
-            results[label] = (data, False, code)
             if code == EXIT_OK and data:
                 write_shared_usage_cache(alias, data)
+                LAST_FETCH_AT[label] = datetime.now(timezone.utc).timestamp()
+                LAST_RESET[label] = get_earliest_reset(data)
+                results[label] = (data, False, code)
+            elif stale := stale_usage(alias):
+                results[label] = (stale, True, EXIT_OK)
+            else:
+                results[label] = (None, False, code)
 
     return results
 
@@ -2316,9 +2774,25 @@ def handle_notifications(
 
 
 def get_alias_from_label(label: str) -> str:
-    """Extract alias from credential path: /path/to/work.credentials.json -> work"""
-    stem = Path(label).stem  # work.credentials
-    return stem.split(".")[0]  # work
+    """Alias from a credential filename — the part that is not "credentials":
+        work.credentials.json   -> work     (deva's <stem>.credentials.json)
+        .credentials.work.json  -> work     (the README's .credentials*.json glob)
+        .credentials.json       -> ""       (the `claude login` default)
+    "" is the default account's key; use display_alias() for anything a
+    human reads. (Splitting on the first dot, as before, made
+    `.credentials.work.json` an alias of "" — two accounts sharing one
+    usage.cache, each shown the other's numbers.)"""
+    name = Path(label).name
+    if name.endswith(".json"):
+        name = name[:-5]
+    parts = [p for p in name.split(".") if p and p != "credentials"]
+    return parts[0] if parts else ""
+
+
+def display_alias(label: str) -> str:
+    """What a human calls this account: its alias, else the runner's tag
+    for the default login, else `default`."""
+    return get_alias_from_label(label) or env_account_tag() or "default"
 
 
 def get_account_tier_sort_key(profile: dict | None) -> int:
@@ -2783,8 +3257,11 @@ def countdown_sleep(
     earliest_reset: datetime | None,
     is_wait_mode: bool = False,
     reset_account: str | None = None,
-) -> bool:
-    """Sleep with real-time countdown display. Returns True if quit requested.
+) -> str:
+    """Sleep with real-time countdown display.
+
+    Returns the reason it ended: "quit", "refresh" (user pressed r), or
+    "timeout" (interval elapsed).
 
     Keys: 'r' = refresh immediately, 'q' = quit
 
@@ -2833,16 +3310,16 @@ def countdown_sleep(
                 sys.stdout.write("\r" + " " * (shutil.get_terminal_size().columns - 1) + "\r")
                 sys.stdout.flush()
                 LOGGER.debug("manual refresh triggered")
-                return False
+                return "refresh"
             elif key_lower == "q":
                 sys.stdout.write("\r" + " " * (shutil.get_terminal_size().columns - 1) + "\r")
                 sys.stdout.flush()
                 LOGGER.debug("quit requested")
-                return True
+                return "quit"
 
     sys.stdout.write("\r" + " " * (shutil.get_terminal_size().columns - 1) + "\r")
     sys.stdout.flush()
-    return False
+    return "timeout"
 
 
 def print_watch_footer(
@@ -2856,8 +3333,10 @@ def print_watch_footer(
     notified_threshold: dict,
     notified_full: dict,
     use_color: bool,
-) -> bool:
-    """Print watch mode footer with status. Returns True if quit requested.
+) -> str:
+    """Print watch mode footer with status.
+
+    Returns the reason the sleep ended: "quit", "refresh", or "timeout".
 
     Chrome-free by design: the live countdown line (with its clock) is the
     freshness proof; config never changes between refreshes, so it prints
@@ -2885,13 +3364,14 @@ def print_watch_footer(
             print(f"{symbol} All quotas full. Next reset: {reset_local}")
 
         sleep_time = min(WAIT_MODE_CHECK_INTERVAL, remaining)
-        if countdown_sleep(
+        status = countdown_sleep(
             sleep_time,
             earliest_global_reset,
             is_wait_mode=True,
             reset_account=earliest_reset_account,
-        ):
-            return True
+        )
+        if status == "quit":
+            return "quit"
 
         if datetime.now(timezone.utc) >= earliest_global_reset:
             send_notification(
@@ -2910,9 +3390,21 @@ def print_watch_footer(
                 print(f"{GREEN}{symbol} Reset notification sent{RESET}")
             else:
                 print(f"{symbol} Reset notification sent")
+        return status
     else:
+        # Cap the sleep at the next window reset so the refresh lands ON the
+        # boundary, not up to `interval` seconds late. Without this the reset
+        # countdown ticks past zero and the account renders stale (100% for a
+        # window that already rolled) until the next full-interval poll.
+        sleep_time = interval
+        if earliest_global_reset:
+            secs = int((earliest_global_reset - now).total_seconds())
+            if 0 < secs < interval:
+                sleep_time = secs + RESET_POLL_GRACE
+        # a failed account is shown stale until the next tick; the tick IS
+        # the retry (bounded by the interval, whatever Retry-After said)
         return countdown_sleep(
-            interval, earliest_global_reset, reset_account=earliest_reset_account
+            sleep_time, earliest_global_reset, reset_account=earliest_reset_account
         )
 
 
@@ -2941,20 +3433,36 @@ def info_usage_watch(
     previous_data = {}
     fail_backoff = 0  # exponential, resets on any successful cycle
 
-    # Fetch profiles once at start (for display and logging)
+    # Profiles carry the org uuid and subscription dates; the 24h shared
+    # cache is fine for those. The tier chip does NOT wait on them: it is
+    # overlaid from the credentials file every cycle (the CLI keeps
+    # rateLimitTier there), so a 5x -> 20x upgrade shows on the next frame
+    # with zero extra requests. Only a MISSING profile is retried.
     LOGGER.debug("fetching account profiles...")
-    account_profiles: dict[str, dict | None] = asyncio.run(
+    raw_profiles: dict[str, dict | None] = asyncio.run(
         fetch_all_profiles_async(credentials)
     )
+    last_profile_attempt = datetime.now(timezone.utc)
 
-    # Sort credentials by tier (20x > 5x > max > pro), then by alias name
-    credentials = sorted(
-        credentials,
-        key=lambda c: (
-            get_account_tier_sort_key(account_profiles.get(str(c[0]))),
-            get_alias_from_label(str(c[0])).lower(),
-        ),
-    )
+    def with_credential_tiers(profiles: dict) -> dict[str, dict | None]:
+        return {
+            str(path): profile_with_credential_tier(profiles.get(str(path)), path)
+            for path, _ in credentials
+        }
+
+    account_profiles = with_credential_tiers(raw_profiles)
+
+    def sort_by_tier(creds):
+        # tier (20x > 5x > max > pro), then alias name
+        return sorted(
+            creds,
+            key=lambda c: (
+                get_account_tier_sort_key(account_profiles.get(str(c[0]))),
+                get_alias_from_label(str(c[0])).lower(),
+            ),
+        )
+
+    credentials = sort_by_tier(credentials)
 
     # config is not state: say it once, then let the frames speak
     config_line = (
@@ -2980,6 +3488,16 @@ def info_usage_watch(
             earliest_reset_account = None
             success_count = 0
             notification_messages = []
+
+            # A profile that never landed (throttled/offline at start) is
+            # retried on a slow cadence; a landed one is good for its TTL.
+            # The tier overlay re-reads the credentials file every cycle.
+            missing = [c for c in credentials if raw_profiles.get(str(c[0])) is None]
+            if missing and (now - last_profile_attempt).total_seconds() >= PROFILE_RETRY_SEC:
+                raw_profiles.update(asyncio.run(fetch_all_profiles_async(missing)))
+                last_profile_attempt = now
+            account_profiles = with_credential_tiers(raw_profiles)
+            credentials = sort_by_tier(credentials)
 
             # Fetch all credentials concurrently
             if len(credentials) > 1:
@@ -3013,7 +3531,7 @@ def info_usage_watch(
                 data, used_cache, code = fetch_results.get(label, (None, False, EXIT_RUNTIME))
 
                 if code != EXIT_OK:
-                    failed_accounts.append(get_alias_from_label(label))
+                    failed_accounts.append(display_alias(label))
                     continue
 
                 if not data:
@@ -3037,7 +3555,10 @@ def info_usage_watch(
                 if not used_cache:
                     previous_data[label] = data
 
-                max_util = get_max_utilization(data, include_model_specific=False)
+                # include model-scoped limits: an account blocked on the
+                # fable/opus weekly is full even when 5h/7d-all sit low, and
+                # must be cached + reset-watched like any other full window.
+                max_util = get_max_utilization(data, include_model_specific=True)
 
                 if max_util < 100:
                     all_full = False
@@ -3067,7 +3588,7 @@ def info_usage_watch(
                     not earliest_global_reset or reset_time < earliest_global_reset
                 ):
                     earliest_global_reset = reset_time
-                    earliest_reset_account = Path(label).stem
+                    earliest_reset_account = display_alias(label)
 
             if notification_messages:
                 print()
@@ -3096,29 +3617,31 @@ def info_usage_watch(
                     print(f"{symbol} Failed: {failed_str}")
 
             if success_count == 0 and len(cached_full_accounts) == 0:
-                # failures never tighten the loop: back off exponentially
-                # (Retry-After-shaped errors land here too) until a cycle
-                # succeeds, capped so recovery is never more than 15m away
-                fail_backoff = min(
-                    BACKOFF_MAX_SEC, (fail_backoff * 2) or BACKOFF_BASE_SEC
+                # Nothing to show and nothing cached: doubling local backoff
+                # from BACKOFF_BASE_SEC, stretched to a Retry-After when the
+                # API sent one, but never past the poll interval — the next
+                # tick is the retry, and one request per tick cannot hurt.
+                fail_backoff = min(interval, (fail_backoff * 2) or BACKOFF_BASE_SEC)
+                aliases = [get_alias_from_label(str(p)) for p, _ in credentials]
+                fails = [f for a in aliases if (f := last_fetch_failure(a))]
+                asked = [f["retry_after"] for f in fails if f.get("retry_after")]
+                wait = min(interval, max([fail_backoff, *asked]))
+                codes = {f.get("code") for f in fails}
+                why = (
+                    "rate limited (429)"
+                    if codes == {"429"}
+                    else "check network/credentials"
                 )
+                left = format_duration(wait) if wait >= 60 else f"{wait}s"
                 print()
-                if use_color:
-                    print(
-                        f"{RED}All accounts failed - check network/credentials"
-                        f" (retry in {fail_backoff}s){RESET}"
-                    )
-                else:
-                    print(
-                        "All accounts failed - check network/credentials"
-                        f" (retry in {fail_backoff}s)"
-                    )
-                if countdown_sleep(fail_backoff, None):
+                msg = f"All accounts failed - {why} (retry in {left})"
+                print(f"{RED}{msg}{RESET}" if use_color else msg)
+                if countdown_sleep(wait, None) == "quit":
                     break
                 continue
             fail_backoff = 0
 
-            if print_watch_footer(
+            footer_status = print_watch_footer(
                 all_full,
                 earliest_global_reset,
                 earliest_reset_account,
@@ -3129,8 +3652,15 @@ def info_usage_watch(
                 notified_threshold,
                 notified_full,
                 use_color,
-            ):
+            )
+            if footer_status == "quit":
                 break
+            # `r` is the human saying "ask now": the next cycle skips the
+            # idle gate (the pool's 60 s freshness still holds — that IS a
+            # fetch someone just made)
+            FORCE_FETCH.clear()
+            if footer_status == "refresh":
+                FORCE_FETCH.update(str(p) for p, _ in credentials)
 
     except KeyboardInterrupt:
         pass
@@ -3186,8 +3716,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--bark",
+        nargs="?",
+        const="",
+        default=None,
         metavar="URL",
-        help="bark endpoint, https://api.day.app/KEY (env CCPACE_BARK)",
+        help="bark push: --bark URL (<server>/KEY; env CCPACE_BARK), or bare "
+        "--bark to use the bark CLI's env (BARK_KEY on BARK_SERVER, "
+        "BARK_GROUP/BARK_ICON honored)",
     )
     p.add_argument(
         "--notifier",
@@ -3252,8 +3787,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if url := args.ntfy or os.getenv("CCPACE_NTFY"):
         NOTIFY_CHANNELS["ntfy"] = url
-    if url := args.bark or os.getenv("CCPACE_BARK"):
-        NOTIFY_CHANNELS["bark"] = url
+    if args.bark is not None or os.getenv("CCPACE_BARK"):
+        url = resolve_bark_url(args.bark or os.getenv("CCPACE_BARK"))
+        if url:
+            NOTIFY_CHANNELS["bark"] = url
+        else:
+            LOGGER.error("--bark: no endpoint — pass a URL, or set BARK_KEY (and BARK_SERVER)")
+            return EXIT_USAGE
     notifier = args.notifier or os.getenv("CCPACE_NOTIFIER")
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None

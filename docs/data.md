@@ -20,10 +20,13 @@ disagrees with it is wrong.
 ## Layout
 
     $CCPACE_DATA_DIR/                 default: ~/.claude/statusline
-      accounts/<account>/             account scope (see identity below)
+      usage.jsonl, *.cache            the untagged account (see identity below)
+      accounts/<account>/             tagged / named accounts
         usage.jsonl                   append-only samples (this spec)
         usage.jsonl.1                 single rotation backup
-        profile.cache                 raw /api/oauth/profile response + fetched_at
+        usage.cache                   raw /api/oauth/usage response + fetched_at
+        usage.err                     statusline's fetch-error state (ccpace: read never, write never)
+        profile.cache                 raw /api/oauth/profile response (mtime = fetch time)
         prepaid_credits.cache         raw prepaid credits response + fetched_at
         forecast.cache                derived weekday burn profile (rebuildable)
 
@@ -33,14 +36,27 @@ isolate (tests, exotic setups).
 
 ### Account identity
 
-`<account>` is the credential alias: the filename stem of the
-credentials file (`work.credentials.json` -> `work`). Statusline
-scopes by `STATUSLINE_ACCOUNT` / `DEVA_AUTH_TAG` (`auth-file-<stem>`);
-the stem is the shared key. ccpace reads both `accounts/<alias>/` and
-`accounts/auth-file-<alias>/`, writes to `accounts/<alias>/`.
-Cross-account mixing is the classic corruption here (statusline
-observed 9000%/day burn rates); readers MUST partition by
-`user.uuid` when aggregating, not trust directory placement alone.
+`<account>` is the write key, and it is the same key statusline uses
+for the same session:
+
+- a named credentials file is its own account: `work.credentials.json`
+  or `.credentials.work.json` -> `work` (the part that is not
+  "credentials"; only `.credentials.json` is the default);
+- the default file (`claude login`, or a runner's overlay) is whoever
+  the runner says — statusline's rule, sanitized the same way:
+  `STATUSLINE_ACCOUNT`, else `DEVA_AUTH_TAG` (`auth-file-<stem>` ->
+  `<stem>`, `auth-default` = none), else the pre-0.18
+  `DEVA_AUTH_DETAILS` stem, else untagged -> the store ROOT. It is
+  displayed by that tag, or `default`.
+
+Directories are where a sample was WRITTEN, not who it belongs to: the
+same account lands at the root when an untagged statusline fetched, in
+`accounts/<tag>/` when a tagged container did, in `accounts/<alias>/`
+when an older ccpace did. Readers therefore read every store under the
+root and partition by `user.uuid`; only without a known uuid (no profile
+yet) does ccpace fall back to the account's own directories. Cross-account
+mixing is the classic corruption here (statusline observed 9000%/day burn
+rates) — never trust placement alone.
 
 ## usage.jsonl records
 
@@ -95,8 +111,14 @@ writer can rotate without eating the other's history. Readers read
 
 ## Caches (derived, disposable)
 
-- profile.cache: raw profile + `fetched_at`. TTL 24h.
-- prepaid_credits.cache: raw response + `fetched_at`. TTL 5 min.
+- profile.cache: raw profile, mtime is the fetch time. TTL 24h. The
+  tier chip does not depend on it: `rateLimitTier` / `subscriptionType`
+  are read from the credentials file itself (the CLI keeps them there),
+  so a plan change shows on the next frame with no request.
+- prepaid_credits.cache: raw response + `fetched_at`. TTL 5 min in
+  statusline, 1 h in ccpace (a balance only moves on a purchase; spend
+  is already in the usage payload). Not fetched at all when the usage
+  payload says `extra_usage.credits_ever_enabled: false`.
 - forecast.cache: `{computed_at, days_history, recent_24h, recent_48h,
   weekday_profile:{"0".."6"}}` — statusline's shape; ccpace computes
   the same numbers from the same log so the two surfaces cannot
@@ -117,6 +139,14 @@ pool. Whichever tool fetched last serves both:
 - Locks (`usage.lock` etc.) are advisory between statusline processes;
   cross-tool safety comes from atomic rename, and the worst race costs
   one duplicate fetch, never a corrupt cache.
+- usage.err is statusline's own fetch-error cooldown. ccpace neither
+  writes it (a `Retry-After: 3600` written there would freeze every
+  statusline render on the machine) nor gates on it (a poller on a
+  15-min tick has nothing to gain from sitting out an hour, and a
+  fresh usage.cache it publishes is served by statusline regardless).
+  ccpace's own failures live in memory for the run: the last usage.cache
+  is shown at any age with a `(stale <age> · !429)` badge and the next
+  poll is the retry.
 
 ## Fetch discipline (rate-limit hygiene)
 
@@ -125,11 +155,16 @@ Defaults chosen so a fleet of watchers stays invisible to the API:
 - usage poll: 900 s default, minimum 60 s enforced, ±10% jitter per
   cycle (fleet watchers must not synchronize).
 - accounts at 100%: no polling until the earliest reset (cap cache).
-- 429/5xx: honor Retry-After when present, else exponential backoff
-  60 s -> 120 -> 240 capped at 900 s; failures never tighten the loop.
-- profile: fetched once per watch start, then 24 h TTL.
-- prepaid credits: 5 min TTL, same backoff file discipline as
-  statusline (`prepaid_credits.err` with retry-until epoch).
+- any fetch failure (429, 5xx, transport): show the last cache badged
+  stale, retry on the next tick. With nothing to show at all: doubling
+  backoff from 60 s, stretched to `Retry-After` when sent, never past
+  the poll interval — the same posture as the CLI, which retries only a
+  401 and otherwise just reports the failure.
+- profile: 24 h shared TTL; only a profile that never landed is retried
+  (every 10 min). Tier comes from the credentials file, not the profile.
+- prepaid credits: 1 h TTL, skipped when credits were never enabled,
+  same backoff file discipline as statusline (`prepaid_credits.err`
+  with retry-until epoch).
 
 ## Forecast inputs
 

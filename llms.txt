@@ -1,0 +1,30 @@
+# ccpace
+
+> Pace your Claude quota. One Python file (`ccpace.py`, PEP 723, `uvx ccpace`):
+> real 5h/7d/per-model utilization from Anthropic's usage endpoint for one or
+> many accounts, a countable 5h-window budget, a window ledger (where the
+> week went), weekday forecasts learned from your own history, watch mode
+> with push notifications (ntfy, bark, custom hook). Shares its fetch pool and
+> sample log with claude-code-statusline; never estimates from transcripts.
+
+Key facts for agents:
+- The whole tool is `ccpace.py`; `pyproject.toml` wraps it for PyPI. Deps: httpx.
+- Reads Claude Code credentials from `~/.claude/.credentials*.json` (or `-f`),
+  refreshes expired tokens via the official OAuth flow (the one write it does).
+- State: `~/.claude/statusline/[accounts/<tag>/]` — usage.cache / profile.cache /
+  usage.jsonl / week.cache, the same files claude-code-statusline writes; the
+  layout and record shape are in docs/data.md (the contract) and
+  docs/statusline-interop.md.
+- Request discipline: pool first (a usage.cache < 60 s is the fetch), idle gate
+  in watch mode (no Claude Code activity + no reset -> no request), failures
+  show the last cache badged — never a lockout.
+- The grammar (rows, ledger glyphs, provenance badges, words) is DESIGN.md;
+  it is the same grammar as claude-code-statusline/DESIGN.md.
+
+## Docs
+
+- [README](https://github.com/thevibeworks/ccpace/blob/main/README.md): install, what it shows, notifications, caveats
+- [DESIGN](https://github.com/thevibeworks/ccpace/blob/main/DESIGN.md): the language
+- [Data contract](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): store layout, record shape, fetch pool, forecast inputs
+- [Statusline interop](https://github.com/thevibeworks/ccpace/blob/main/docs/statusline-interop.md): how the two tools share one store
+- [CHANGELOG](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): per-release rationale
