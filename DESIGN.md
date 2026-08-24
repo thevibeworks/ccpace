@@ -11,9 +11,8 @@ the statusline shows in one line.
 5h     13% █▒▒▒▒▒▒▒░░  4h 11m   @04:00         +3%  0.6x
 7d     42% ████▒▒▒▒░░  10h 29m  @Wed 19 09:00       0.7x
 fable  70% ███████▒▒░  10h 29m  @Wed 19 09:00       0.7x
-           ▅▁▂ ▃▅ˍ▃▅ ▃▃▁▂▁ ▅ˍ▂▁▁ ˍˍˍ▃▅ ˍˍˍ▅ ▆▆ˍ▂▮▯▯
-           budget: ~3 windows left · 20%/window stays even · heading ~52%
-           forecast: +19% rest of week on your pattern · lands ~58%
+           ▅▂▃ ▄▅▁▄▅ ▄▄▂▃▂ ▅▁▃▂▂ ▁▁▁▄▅ ▁▁▁▅ ▆▆▁▃▮▯▯
+           budget: ~2 windows left · 29%/window stays even · lands ~58% on your pattern
 ```
 
 Three bands, one question each: **rows** how much of this window is
@@ -32,8 +31,9 @@ never a countdown that rots.
 ## Ledger
 
 ```
-▁▂▃▄▅▆▇█   burned; height = 7d points that 5h window cost (▁ ≤2 … █ >20)
-ˍ          ran, negligible — a bar of height zero, on the baseline
+▂▃▄▅▆▇█    burned; height = 7d points that 5h slot cost (▂ ≤2 … █ >20)
+▁          baseline: ran, negligible — the shortest bar of the same block,
+           so the zero line and the bars share one font and one width
 ░          unknown — no sample; never drawn as idle
 ▮          now
 ▯          ahead — the hollow of ▮
@@ -43,6 +43,32 @@ never a countdown that rots.
 
 34 cells, oldest left, a gap at each local midnight *in history only*.
 Tint = the 7d row's color; nothing else in the row is colored.
+
+A GRID anchored to the period start, not a row of your real 5h windows —
+those follow the 5h reset, in phase only by coincidence, and 34 cells span
+170h against a 168h period. That grid is what makes a day's windows land
+under one day. Read the row for shape; the budget line owns the count,
+which comes from clocks. They sit within one cell of each other.
+
+## Advice
+
+```
+ !  7d dry ~Wed 14:20, 19h before reset; then hard stop until reset
+    budget: ~9 windows left · 6.2%/window stays even · lands ~91% on your pattern
+             runway              RATION                  PREDICTION
+```
+
+`!` is a wall: a date, and the gap before the reset. The budget line is
+the week in one breath, and its two futures are different kinds of
+statement — the RATION is what to spend (that rate lands exactly on 100),
+the PREDICTION is where your own behaviour takes you. Tagged `on your
+pattern` when the learned weekday walk spoke, `at this pace` when it was
+linear, so the reader always knows which model answered.
+
+One model per block. A landing is capped at 100 — above that the fact is
+the DATE, and the `!` row is where it goes. Two lines describing one week
+with two numbers is not more information; it is an argument the reader has
+to settle.
 
 ## Provenance on the rule
 

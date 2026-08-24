@@ -71,19 +71,17 @@
     L.push(row("5h", String(t.w5), "o", bar(1, 0, 1), "3h " + t.wmin + "m", "@19:00", "0.3x", "c"));
     L.push(row("7d", "23", "o", bar(2, 0, 2), "4d 8h", "@Thu 13 00:00", "0.8x", "c"));
     L.push(row("fable", "21", "o", bar(2, 0, 2), "4d 8h", "@Thu 13 00:00", "0.8x", "c"));
-    L.push("           " + glyphs("▂▁·▃▄▂·▁▅", "p") + glyphs("▮") + glyphs("▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫") + glyphs("┤", "w"));
-    L.push('           <span class="c">budget: ~21 windows left · 3.7%/window stays even · </span><span class="w">period ends ~Aug 11</span>');
-    L.push('           <span class="c">forecast: +31% rest of week on your pattern · lands ~54% (18d history)</span>');
+    L.push("           " + glyphs("▃▂▁▄▅▃▁▂▆", "p") + glyphs("▮") + glyphs("▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯") + glyphs("┤", "w"));
+    L.push('           <span class="c">budget: ~20 windows left · 3.9%/window stays even · </span><span class="w">period ends ~Aug 11</span>');
     L.push("");
     // personal: 5x, pacing hot
     L.push(rule(" 5x", "k", "personal", "period ends ~Aug 8", true));
     L.push(row("5h", String(t.p5), "w", bar(2, 2, 0), "3h " + t.pmin + "m", "@16:00", "1.8x", "e"));
     L.push(row("7d", "64", "w", bar(6, 0, 1), "2d 2h", "@Sat 8 15:00", "1.2x", "w"));
-    L.push('           ' + glyphs("▃▅▄▆·▂▇▅", "p") + glyphs("▮") + glyphs("▫▫▫▫▫▫▫") + glyphs("××", "e") + glyphs("┤", "w"));
+    L.push('           ' + glyphs("▄▆▅▇▁▃█▆", "p") + glyphs("▮") + glyphs("▯▯▯▯▯▯▯") + glyphs("××", "e") + glyphs("┤", "w"));
     L.push(' <span class="w">!  5h pace 1.8x - cap ~13:47, 2h 12m before reset</span>');
-    L.push(' <span class="w">!  7d pace 1.2x - cap ~Sat 8 03:00, 12h before reset; then hard stop until reset</span>');
-    L.push('           <span class="c">budget: ~8 windows left · 4.5%/window stays even · </span><span class="w">period ends ~Aug 8</span>');
-    L.push('           <span class="c">forecast: +41% rest of week on your pattern · </span><span class="w">lands ~105% (9d history)</span>');
+    L.push(' <span class="w">!  7d dry ~Sat 8 03:00, 12h before reset; then hard stop until reset</span>');
+    L.push('           <span class="c">budget: ~7 windows left · 5.1%/window stays even · </span><span class="w">period ends ~Aug 8</span>');
     L.push("");
     // status line: stable left, tickers right
     var left = "reset 1h 41m (work) | r=refresh q=quit";

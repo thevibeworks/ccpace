@@ -1,5 +1,135 @@
 # Changelog
 
+## v0.3.0 (2026-08-24)
+
+The forecast was wrong, and it was wrong in the way that is hardest to
+notice: it produced a fluent sentence. On a week with 56% of the pool
+left, this tool printed
+
+```
+budget: ~10 windows left · 5.6%/window stays even · heading ~62% at reset Wed 26 09:00
+forecast: +133% rest of week on your pattern · lands ~177% (251d history)
+```
+
+Two lines, one week, three numbers that cannot all be true, and no way
+for the reader to tell which — if any — was the forecast. This release is
+that block reduced to one model and one sentence.
+
+### Burn is the rise of an envelope, not the sum of the deltas
+
+Utilization inside a window only climbs, so a sample below the running
+max is one of two things: a stale session reporting the numbers it last
+saw, or a real reset. They need opposite answers — hold, or re-baseline —
+and summing raw positive deltas gives neither. It credits the dip's
+recovery as fresh burn, counting the same points twice.
+
+The measured cost of that: 146 points of "burn" against a real 50-point
+week, and 149%/day in a Thursday. It is the arithmetic behind `+133%`.
+
+A stale window is now dropped on its key (a NEWER 7d `resets_at` is
+certainly a new window; an unchanged one proves nothing, since an observed
+100 -> 0 reset left it untouched), and everything else falls to a
+two-signal test: sustained (>= 2 samples below) AND deep (>= 15 points).
+Both cheap, both independent. The failure mode is a bounded under-count,
+which costs a missed warning where the over-count cost a false alarm on
+every frame. The first sample of a series is a baseline, not burn: seeing
+an account already at 40 is not watching it climb there.
+
+### A landing above 100 is not a landing
+
+`lands ~177%` describes nothing. The pool is 100; a projection past it is
+a wall plus burn that never happens. The walk now caps the landing at 100
+and returns the moment the pool dries, which is the fact worth having —
+so the block says `7d dry ~Wed 14:20, 19h before reset; then hard stop`
+and the budget line lands on exactly 100. Two readings of one walk.
+
+The walk also stays silent where it has no standing: below two weeks of
+history (statusline's floor too, so the surfaces agree about whether a
+forecast exists), on a 7d window younger than a day (the profile
+describes the windows *before* this one, and the 24h blend describes a day
+on the far side of the reset), and on any profile claiming a weekday
+averages more than the whole pool per day — no real one can, so that
+input came from a broken accountant. It gained the recent-24h blend over
+the first day, so a hot streak escalates before the weekday average
+catches up.
+
+### One budget line, and every number named
+
+```
+budget: ~9 windows left · 6.2%/window stays even · lands ~91% on your pattern
+```
+
+`N%/window stays even` is a RATION — spend that per window and the pool
+lands exactly on 100. `lands ~N%` is a PREDICTION — spend like you have
+been and you end up here. They are different kinds of statement and the
+old line ran them together under one word, "heading", which is neither: a
+direction is not a destination. The landing now says which model produced
+it, `on your pattern` for the learned walk and `at this pace` for the
+linear fallback, and linear inherits the same 100 ceiling so the fallback
+cannot reintroduce what the walk just lost. The separate `forecast:` line
+is gone; there was never a second week to describe.
+
+`~N windows left` no longer counts the window you are standing in. That
+one is where you are, not what you have left — the ledger already draws
+it as `▮` and the 5h row already prices it, so counting it again made
+`▮ + 9` read as ten, and made this tool disagree with statusline about
+the same week. Same definition as `windows_ahead` there:
+`(7d left - 5h left)`, rounded up. Both clocks tick down together, so the
+count holds still inside a window and steps down by exactly one at each
+rollover — a countdown rather than a reading that drifts.
+
+### The shared cache has a contract now
+
+`forecast.cache` lives in statusline's store and statusline computes a
+superset of it off the same log: the cross-window exchange rate, the
+per-model weekly profile, the dollars a quota point costs. ccpace rebuilt
+the five fields it knew and wrote them flat over the file, dropping all
+three every time it ran — after which statusline's report said "still
+learning" about its own price and exchange rate until the next hourly
+scan. It also published its pre-envelope profile there, which
+statusline's corrupt-profile guard then had to refuse, dropping that
+surface back to linear pace as well.
+
+So: the cache carries `schema`, the version of the MODEL rather than of
+the file. Writes MERGE and never truncate keys we do not compute. Reads
+treat freshness as necessary and not sufficient — an unversioned or
+foreign cache is stale however recently it was written — and a fresh
+cache of our own schema is read rather than recomputed, because it holds
+the same numbers and cost someone else the scan. Written down in
+`docs/data.md` and in claude-code-statusline `docs/api/state-dir.md`.
+
+A profile whose only credited day was today is no longer published at
+all. It came out as seven `-1`s with `days_history: 0`, harmless to read
+and actively harmful to publish: stamped with a current timestamp into a
+shared cache, it silenced the walk on every surface that read it until
+the hour turned.
+
+### The ledger is one typeface
+
+The strip's baseline was `ˍ` (U+02CD MODIFIER LETTER LOW MACRON) while
+every bar above it came from Block Elements. Terminals resolve those
+through different faces, so the zero line sat at a different height and
+advance width than the bars beside it and the seam showed on every row
+that held both. It is `▁` now, the shortest bar of the same run. Burn
+starts one rung up, at `▂`; `▅` and above keep their thresholds, so a
+fully burned window reads the height it always did.
+
+The ledger's docstring stops claiming its cells are countable as windows
+left. They are a grid anchored to the period start — which is what makes
+the history readable — while your 5h windows are anchored to the 5h
+reset, in phase only by coincidence, and 34 cells span 170 h against a
+168 h period besides. Measured across a full week of positions the two
+agree about three times in four and are never more than one cell apart.
+The sentence owns the number; the row carries the shape.
+
+### Tests
+
+`t/`, run with `make check`. There were none, which is the whole story of
+this release: the model was invisible and only its sentences were on
+screen, and the sentences were plausible. 38 cases now pin the burn
+accounting, the walk's silences and ceilings, the cache contract in both
+directions, and the wording of every clause in the budget line.
+
 ## v0.2.0 (2026-08-18)
 
 One release for what was found by watching a week of real use against

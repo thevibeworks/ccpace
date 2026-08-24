@@ -119,10 +119,25 @@ writer can rotate without eating the other's history. Readers read
   statusline, 1 h in ccpace (a balance only moves on a purchase; spend
   is already in the usage payload). Not fetched at all when the usage
   payload says `extra_usage.credits_ever_enabled: false`.
-- forecast.cache: `{computed_at, days_history, recent_24h, recent_48h,
-  weekday_profile:{"0".."6"}}` — statusline's shape; ccpace computes
-  the same numbers from the same log so the two surfaces cannot
-  disagree. Rebuild at most hourly. Unknown weekday = -1.
+- forecast.cache: `{schema, computed_at, days_history, recent_24h,
+  recent_48h, weekday_profile:{"0".."6"}, ...}` — statusline's shape,
+  and statusline computes a SUPERSET off the same log (`pct_per_window`,
+  `scoped_*`, `cost`). Rebuild at most hourly. Unknown weekday = -1.
+
+  This is the one derived cache more than one tool wants to write, so
+  `schema` versions the MODEL (2 = envelope burn) and the rule cuts both
+  ways. **Reading**: freshness is necessary and not sufficient — a cache
+  whose schema is missing or lower is rebuilt on sight, however recently
+  it was written. **Writing**: stamp the schema you actually implement,
+  and MERGE into what is already there. ccpace rebuilt only the five
+  fields it knew for months, which silently truncated statusline's
+  exchange rate, per-model profile and price join on every run; those
+  surfaces then said "still learning" until the next hourly scan. A
+  writer owns the keys it computes and nothing else.
+
+  When a fresh cache of our own schema is already there, read it rather
+  than recompute: same numbers, one scan. See claude-code-statusline
+  `docs/api/state-dir.md`, "The co-writer contract".
 
 ## Shared fetch pool
 
@@ -168,8 +183,70 @@ Defaults chosen so a fleet of watchers stays invisible to the API:
 
 ## Forecast inputs
 
-The weekday model consumes only `type:"usage"` records: positive
-deltas of `seven_day.utilization` per local calendar day, partitioned
-by `user.uuid`, EWMA-weighted with a 14-day half-life (plan changes
-rescale percentages; old scales must fade). Below 3 days of history
-the forecast is silent — a model with no data is decoration.
+The weekday model consumes only `type:"usage"` records, partitioned by
+`user.uuid` and EWMA-weighted with a 14-day half-life (plan changes
+rescale percentages; old scales must fade). Below 14 days of history
+the forecast is silent — a model with no data is decoration, and 14 is
+also statusline's floor, so the two surfaces agree about whether a
+forecast exists at all.
+
+Daily burn is **the rise of a monotone envelope**, never the sum of raw
+positive deltas. Utilization inside a window only climbs, so a sample
+below the running max is one of two things and they need opposite
+answers:
+
+| | what it is | what to do |
+|---|---|---|
+| stale | an idle session reporting the numbers it last saw | hold the envelope |
+| reset | the counter really went back to zero | re-baseline, credit nothing |
+
+`resets_at` cannot tell them apart on its own — an observed 7d reset
+(100 -> 0) left it untouched — so the window key is a ONE-WAY hint: a
+newer key is certainly a new window, an unchanged one proves nothing.
+A stale window's samples are dropped; everything else falls to a
+two-signal test, sustained (>= 2 samples below) AND deep (>= 15 points).
+The failure mode is a bounded under-count, which costs a missed warning;
+the over-count cost a false alarm on every frame.
+
+This is not a refinement. Summing raw deltas credits every stale dip and
+then credits the re-climb, counting the same burn twice — measured, it
+read 146 points of burn against a real 50-point week, and put 149%/day
+into a Thursday. The projection built on that said `+133% rest of week`
+on a week with 56% of the pool left.
+
+## The projection
+
+One walk, read twice. `project_week` steps from now to the reset (or to
+the access boundary, whichever binds) a day at a time against the
+weekday profile, blending the last 24h over the first day so a hot
+streak escalates before the weekday average catches up. It returns the
+landing **capped at 100** and the moment the pool dries, if it does.
+
+The cap is the point. Utilization cannot exceed the pool: a projection
+of 177% is not a landing, it is a wall plus burn that never happens.
+Above 100 the fact is the DATE, and that is what the block prints — a
+`!` wall with the time and the gap before reset — while the budget line
+lands on exactly 100. Two readings of one model, never two models.
+
+It stays silent rather than guess: below the history floor, on a window
+younger than 24 h (the profile describes the windows *before* this one),
+on nothing spent yet, and on any profile claiming a weekday averages more
+than the whole pool per day — no real one can, so that input came from a
+broken accountant.
+
+## The budget line
+
+Three clauses, and the grammar keeps them apart because two of them are
+different kinds of statement:
+
+```
+budget: ~9 windows left · 6.2%/window stays even · lands ~91% on your pattern
+         runway              RATION                  PREDICTION
+```
+
+`N%/window stays even` is what to spend — that rate lands the pool
+exactly on 100. `lands ~N%` is where your own behaviour takes you, tagged
+`on your pattern` for the learned walk and `at this pace` for the linear
+fallback, so the reader always knows which model spoke. The runway counts
+windows AHEAD of the one you are in: the current window is where you are,
+not what you have left, and it is already drawn as `▮`.

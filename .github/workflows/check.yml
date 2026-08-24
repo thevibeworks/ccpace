@@ -1,0 +1,31 @@
+# The suite, on every push and PR. A test suite nobody runs is a comment —
+# and the release this workflow arrives with exists because a wrong forecast
+# model shipped for months behind fluent sentences.
+name: check
+on:
+  push:
+    branches: [main]
+    paths-ignore: [site/**, "**.md"]
+  pull_request:
+    paths-ignore: [site/**, "**.md"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # the floor from pyproject's requires-python, and current
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --group dev --python ${{ matrix.python }} pytest t/ -q
+      - run: uv build

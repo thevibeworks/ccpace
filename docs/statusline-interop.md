@@ -27,6 +27,17 @@ tools, doubled API fetches, and two dialects of the same record.
    - Derived caches (`forecast.cache`, `prepaid_credits.cache`,
      `profile.cache`) keep their current shapes; any tool may rebuild
      them, TTLs as today (forecast 1h, credits 5min, profile 24h).
+   - "Any tool may rebuild them" was too loose for `forecast.cache`, the
+     one of the three that carries a learned MODEL rather than a cached
+     response. It now carries `schema`, and a co-writer must stamp the
+     schema it implements, merge rather than replace, and treat a
+     foreign or unversioned cache as stale however fresh its timestamp.
+     Read the full contract in claude-code-statusline
+     `docs/api/state-dir.md`. Until this was written down, ccpace
+     rebuilt the five fields it knew and dropped statusline's exchange
+     rate, per-model profile and price join every time it ran — and
+     published a profile from a burn model statusline had already
+     abandoned, which statusline's own guard then had to refuse.
 
 2. Account scoping: statusline keys `accounts/<tag>` by
    `STATUSLINE_ACCOUNT`/`DEVA_AUTH_TAG` (`auth-file-<stem>`); ccpace

@@ -18,13 +18,21 @@ Reading the output:
   end; one row per rate-limit window (5h, 7d, per-model).
 - Bars: `█` both usage and time passed, `▓` usage ahead of time (hot),
   `▒` time ahead of usage (headroom), `░` untouched.
-- The ledger strip under the 7d row: one cell per 5h window; `▮` = now,
-  `▫` = future window, `×` = window the pool will not cover, `┤` = access
-  ends there. Countable: cells from `▮` right equal "windows left".
-- `!` lines are pace warnings; the budget line gives windows left and
-  %/window to stay even; the forecast line projects the week from the
-  account's own history.
+- The ledger strip under the 7d row: one cell per 5h slot of the period;
+  `▂`..`█` what a slot burned, `▁` the baseline (ran, cost nothing),
+  `░` unknown, `▮` = now, `▯` = a slot ahead, `×` = a slot the pool will
+  not cover, `┤` = access ends there. It is a grid on the period start,
+  so read it for SHAPE — the budget line's count comes from the clocks
+  and is the number to quote.
+- `!` lines are walls: a pace or learned-forecast projection of when the
+  pool runs out, with the date and the gap before reset.
+- The budget line is the week in one breath: windows left, the RATION
+  (`N%/window stays even` — spend that and you land exactly on 100), and
+  the PREDICTION (`lands ~N%`, tagged `on your pattern` when it comes
+  from the learned weekday profile and `at this pace` when it is linear).
+  Two different futures; do not blur them when you report.
 
 Answer with the numbers, not the raw dump: utilization, time to reset,
-windows left, and whether the pace warning fired. Never run `--watch`
-from here (interactive TUI; needs a real terminal).
+windows left, where it lands and by which model, and whether a wall
+fired. Never run `--watch` from here (interactive TUI; needs a real
+terminal).

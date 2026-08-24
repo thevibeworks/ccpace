@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.2.0
+# Version: 0.3.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -31,15 +31,16 @@ usage bars merge usage and window-elapsed time:
 
 on terminals >= 72 cols the 7d row grows a window ledger: one cell
 per 5h window of the period (34 cells), left to right in time —
-  ▁▂▃▄▅▆▇█  a window that ran; height = 7d points it burned
-  ˍ         ran, burned under a point (a bar of height zero)
+  ▂▃▄▅▆▇█   a window that ran; height = 7d points it burned
+  ▁         ran, burned under a point — the baseline, same block as the bars
   ░         unknown: no samples on record for that window
   ▮         the window you are in now
   ▯         a window still ahead of you (the hollow of ▮: an empty slot)
   ×         a window the 7d pool will not cover at the current pace
   ┤         access ends here (trial end, or the derived sub period end
             assumed binding — the API states no renewal/cancel date)
-count ▮ plus what follows it for the advisor's "windows left". History
+what follows ▮ is the advisor's "windows left" — ▮ itself is where you
+are, not a window you have left. History
 comes from the sample store (shared with claude-code-statusline; see
 docs/data.md); with no store the past is honestly ░, not empty.
 
@@ -71,11 +72,11 @@ import termios
 import tty
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -110,8 +111,34 @@ RESET_POLL_GRACE = 5  # seconds past a window reset before the boundary re-poll 
 # payload's extra_usage); statusline keeps its 5-min TTL, ccpace piggybacks
 CREDITS_TTL_SEC = 3600
 FORECAST_REBUILD_SEC = 3600
-FORECAST_MIN_DAYS = 3
+# forecast.cache is a SHARED derived cache in statusline's store, and the
+# schema is the version of the MODEL, not of the file (see
+# claude-code-statusline docs/api/state-dir.md, "The co-writer contract"):
+#   2  envelope burn + the full key set (pct_per_window, scoped_*, cost)
+# The rule cuts both ways. Reading, freshness is necessary and not
+# sufficient: a cache whose schema is missing or lower gets rebuilt, however
+# recently it was written. Writing, we merge into whatever is already there
+# and never truncate keys we do not compute — for months this file rebuilt
+# only the five fields it knew, which silently dropped statusline's exchange
+# rate, its per-model profile and its price join every time ccpace ran.
+FORECAST_SCHEMA = 2
+# The walk's own floor, and statusline's: below two weeks a weekday profile
+# is one observation per day and the projection swings with it. Both surfaces
+# wait for the same evidence or they disagree about whether a forecast exists.
+FORECAST_MIN_DAYS = 14
 FORECAST_HALF_LIFE_DAYS = 14.0
+# Burn is the rise of a monotone envelope, never the sum of raw positive
+# deltas. An idle session reports the numbers it last saw, so a dip is almost
+# always stale rather than refunded — summing deltas credits the fall and
+# then the re-climb, counting the same burn twice. A real reset looks
+# different: it sticks (>= CONFIRM samples) and it is deep (>= DROP points).
+# Both signals, or the envelope holds.
+FORECAST_RESET_CONFIRM = 2
+FORECAST_RESET_DROP = 15
+# A 7d window younger than this has no evidence of its own: the profile
+# describes the windows BEFORE it, and the recent-24h blend describes a day
+# that sits on the far side of the reset.
+SEVEN_DAY_YOUNG_SEC = 86400
 USAGE_LOG_MAX_BYTES = int(os.getenv("USAGE_LOG_MAX_BYTES", str(32 * 1024 * 1024)))
 
 WINDOW_5H_SEC = 5 * 3600
@@ -766,11 +793,6 @@ def format_dual_bar(
     return f"{fill_color}{body}{gap_color}{gap}{DIM}{rest}{RESET}"
 
 
-def windows_left(entry: dict) -> int:
-    """Whole 5h windows still touchable in the window, current one included."""
-    return max(0, int((entry["remaining"] + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC))
-
-
 def data_root() -> Path:
     """Shared store root (docs/data.md): statusline's home, by design.
 
@@ -872,7 +894,7 @@ def all_store_paths(log_dir: Path | None = None) -> list[Path]:
 
 def load_account_history(
     alias: str, account_uuid: str, log_dir: Path | None = None
-) -> list[tuple[float, float, float, str]]:
+) -> list[Sample]:
     """The samples that belong to this account, wherever they were written.
 
     With the account uuid (from its profile) every store is read and rows
@@ -881,19 +903,38 @@ def load_account_history(
     unpartitioned: narrower, but never another account's history."""
     if account_uuid:
         rows = load_usage_samples(all_store_paths(log_dir))
-        return [r for r in rows if r[3] == account_uuid]
+        return [r for r in rows if r.uuid == account_uuid]
     return load_usage_samples(own_store_paths(alias, log_dir))
 
 
 # parsed stores, keyed by path -> (mtime, size, rows): watch mode re-reads
 # a 20 MB history every frame otherwise; a store only ever grows/rotates
-_SAMPLE_CACHE: dict[Path, tuple[float, int, list[tuple[float, float, float, str]]]] = {}
+_SAMPLE_CACHE: dict[Path, tuple[float, int, list[Sample]]] = {}
+
+
+class Sample(NamedTuple):
+    """One observation of the quota, as the shared store records it.
+
+    A plain tuple by inheritance, so readers that index positionally keep
+    working; named, because five positional floats is how `seven_reset` got
+    added and nothing noticed which one it was.
+
+    `seven_reset` is 0.0 for rows that carried no 7d `resets_at` — the field
+    is younger than the log. Everything that uses it treats 0.0 as "no
+    window key here" rather than as a window.
+    """
+
+    ts: float
+    five_reset: float
+    util: float          # seven_day.utilization at ts
+    uuid: str            # account uuid, "" when the row does not carry one
+    seven_reset: float   # 7d resets_at, the window key the envelope needs
 
 
 def load_usage_samples(
     paths: list[Path],
-) -> list[tuple[float, float, float, str]]:
-    """Parse sample stores into (sample_ts, five_hour_reset_ts, seven_util, uuid).
+) -> list[Sample]:
+    """Parse sample stores into Samples (see the class for the fields).
 
     Accepts both the store-v1/statusline shape ({"timestamp","five_hour",
     "seven_day","user":{...}}) and claudex's legacy {"ts","usage":{...}}
@@ -910,7 +951,7 @@ def load_usage_samples(
             if hit and hit[0] == st.st_mtime and hit[1] == st.st_size:
                 out.extend(hit[2])
                 continue
-            rows: list[tuple[float, float, float, str]] = []
+            rows: list[Sample] = []
             with path.open(encoding="utf-8") as f:
                 for line in f:
                     try:
@@ -933,7 +974,15 @@ def load_usage_samples(
                     uuid = (row.get("user") or {}).get("uuid") or (
                         (row.get("account") or {}).get("account") or {}
                     ).get("uuid") or ""
-                    rows.append((float(ts), reset.timestamp(), float(util), uuid))
+                    # The 7d reset is the envelope's window key. The API
+                    # jitters it (05:59:59 and 06:00:00 are one window), so
+                    # round to the minute exactly as the writers do — an
+                    # identity that wobbles is not an identity.
+                    seven_reset = parse_reset_dt(seven.get("resets_at"))
+                    rows.append(Sample(
+                        float(ts), reset.timestamp(), float(util), uuid,
+                        round(seven_reset.timestamp() / 60) * 60 if seven_reset else 0.0,
+                    ))
             _SAMPLE_CACHE[path] = (st.st_mtime, st.st_size, rows)
             out.extend(rows)
         except OSError:
@@ -955,7 +1004,7 @@ def window_period_start(entry: dict) -> float:
 
 
 def build_window_history(
-    samples: list[tuple[float, float, float]], period_start: float, width: int
+    samples: list[Sample], period_start: float, width: int
 ) -> tuple[dict[int, float], tuple[float, float] | None]:
     """Attribute observed 7d burn to fixed 5h slots of the current period.
 
@@ -968,12 +1017,12 @@ def build_window_history(
     """
     if not samples:
         return {}, None
-    span = (min(s[0] for s in samples), max(s[0] for s in samples))
+    span = (min(s.ts for s in samples), max(s.ts for s in samples))
 
     by_window: dict[float, list[float]] = {}
-    for _ts, reset_ts, util, _uuid in samples:
-        key = round(reset_ts / 300) * 300
-        by_window.setdefault(key, []).append(util)
+    for sample in samples:
+        key = round(sample.five_reset / 300) * 300
+        by_window.setdefault(key, []).append(sample.util)
 
     costs: dict[int, float] = {}
     for key, utils in by_window.items():
@@ -986,18 +1035,85 @@ def build_window_history(
 
 # --- forecast ---
 
+def seven_day_envelope(
+    rows: list[Sample], now: datetime
+) -> tuple[dict[int, float], float, float]:
+    """Walk the 7d series as a monotone envelope; return (burn per local day,
+    last 24h, last 48h).
+
+    Utilization inside one window only ever climbs. A sample below the
+    running max is therefore one of two things, and they need opposite
+    answers:
+
+      stale   an idle session reporting the numbers it last saw. One sample,
+              a small step back. Hold the envelope — crediting the fall and
+              then the re-climb counts the same burn twice.
+      reset   the counter really did go back to zero. It sticks, and it is a
+              long fall. Re-baseline and credit nothing.
+
+    The window key is a ONE-WAY hint: a newer 7d `resets_at` is certainly a
+    new window, an unchanged one proves nothing (an observed 100 -> 0 reset
+    left `resets_at` untouched). So a stale window is dropped outright and
+    everything else falls to the two-signal test — sustained
+    (FORECAST_RESET_CONFIRM samples) AND deep (FORECAST_RESET_DROP points).
+    Both are cheap and independent, and the failure mode is a bounded
+    UNDER-count, which costs a missed warning where the over-count cost a
+    false alarm on every frame.
+
+    The first sample is a BASELINE, not burn: it shows where the account
+    already stood, not the climb to there.
+    """
+    tz = primary_tz() or datetime.now().astimezone().tzinfo
+    now_ts = now.timestamp()
+    daily: dict[int, float] = {}
+    recent_24h = recent_48h = 0.0
+    env: float | None = None
+    window = 0.0
+    low_n, low_min = 0, 0.0
+
+    for sample in rows:
+        util, key = sample.util, sample.seven_reset
+        if key:
+            if key < window:
+                continue                      # a stale session's old window
+            if key > window:                  # a new window: re-baseline
+                window, env, low_n = key, util, 0
+                continue
+        if env is None:
+            env = util
+            continue
+        if util < env:
+            low_n += 1
+            low_min = util if low_n == 1 else min(low_min, util)
+            if low_n < FORECAST_RESET_CONFIRM or env - low_min < FORECAST_RESET_DROP:
+                continue                      # stale, not a refund
+            env, low_n = low_min, 0           # confirmed reset
+        low_n = 0
+        if util <= env:
+            continue
+        delta, env = util - env, util
+        day = datetime.fromtimestamp(sample.ts, tz).date().toordinal()
+        daily[day] = daily.get(day, 0.0) + delta
+        if now_ts - sample.ts <= 86400:
+            recent_24h += delta
+        if now_ts - sample.ts <= 2 * 86400:
+            recent_48h += delta
+    return daily, recent_24h, recent_48h
+
+
 def weekday_burn_forecast(
-    samples: list[tuple[float, float, float, str]],
+    samples: list[Sample],
     account_uuid: str,
     now: datetime,
 ) -> dict | None:
     """Learn the account's weekday burn signature from the sample store.
 
-    Daily burn = sum of positive deltas of 7d utilization within a local
-    calendar day (negative deltas are window resets; ignored by
-    construction). Weekdays are EWMA-weighted with a 14-day half-life so
-    plan changes fade instead of poisoning the profile. Same numbers as
-    statusline's forecast.cache — two surfaces, one model.
+    Daily burn is the rise of a monotone envelope (see seven_day_envelope),
+    attributed to the local calendar day it happened on. Weekdays are
+    EWMA-weighted with a 14-day half-life so plan changes fade instead of
+    poisoning the profile. The same accounting statusline's forecast.cache
+    uses — two surfaces, one model, or the numbers they print about the
+    same week cannot both be true.
 
     Rows carrying a different account uuid are excluded; unlabeled rows
     (legacy stores) are kept because alias-scoped dirs are single-account
@@ -1005,28 +1121,14 @@ def weekday_burn_forecast(
     """
     tz = primary_tz() or datetime.now().astimezone().tzinfo
     rows = sorted(
-        (s for s in samples if not account_uuid or not s[3] or s[3] == account_uuid),
-        key=lambda s: s[0],
+        (s for s in samples if not account_uuid or not s.uuid or s.uuid == account_uuid),
+        key=lambda s: s.ts,
     )
     if not rows:
         return None
 
-    daily: dict[int, float] = {}  # local day ordinal -> burn %
-    recent_24h = recent_48h = 0.0
     now_ts = now.timestamp()
-    prev: tuple[float, float] | None = None
-    for ts, _reset, util, _u in rows:
-        if prev is not None:
-            delta = util - prev[1]
-            if delta > 0:
-                day = datetime.fromtimestamp(ts, tz).date().toordinal()
-                daily[day] = daily.get(day, 0.0) + delta
-                if now_ts - ts <= 86400:
-                    recent_24h += delta
-                if now_ts - ts <= 2 * 86400:
-                    recent_48h += delta
-        prev = (ts, util)
-
+    daily, recent_24h, recent_48h = seven_day_envelope(rows, now)
     if not daily:
         return None
 
@@ -1041,11 +1143,21 @@ def weekday_burn_forecast(
         weights[dow] = weights.get(dow, 0.0) + w
         burns[dow] = burns.get(dow, 0.0) + w * burn
 
+    if not weights:
+        # Every credited day was today, and today is never a training day. The
+        # profile that falls out is seven -1s with days_history 0 — useless to
+        # read and actively harmful to publish: this cache is SHARED, and an
+        # empty profile stamped with a current timestamp silences the walk on
+        # every surface that reads it until the hour turns. Nothing learned,
+        # nothing written.
+        return None
+
     profile = {
         str(d): round(burns[d] / weights[d], 2) if weights.get(d) else -1
         for d in range(7)
     }
     return {
+        "schema": FORECAST_SCHEMA,
         "computed_at": int(now_ts),
         "days_history": sum(1 for d in daily if d < today),
         "recent_24h": round(recent_24h, 2),
@@ -1054,52 +1166,125 @@ def weekday_burn_forecast(
     }
 
 
-def write_forecast_cache(alias: str, forecast: dict) -> None:
-    """Persist the profile (rebuild at most hourly; disposable, derived)."""
+def read_forecast_cache(alias: str) -> dict | None:
+    """A shared profile someone already built, if it is one we can read.
+
+    Freshness is necessary and not sufficient: the schema has to match too,
+    or a partial write by a co-writer gets trusted for the rest of the hour.
+    When it does match this is the interop win — statusline scans the whole
+    log hourly and computes strictly more than ccpace does (the exchange
+    rate, the per-model profile, the price join). Recomputing the overlap
+    would cost a second full scan to arrive at the same weekday numbers.
+    """
     path = account_dir(alias) / "forecast.cache"
     try:
+        cached = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(cached, dict) or cached.get("schema") != FORECAST_SCHEMA:
+        return None
+    age = datetime.now(timezone.utc).timestamp() - cached.get("computed_at", 0)
+    if age >= FORECAST_REBUILD_SEC or not isinstance(
+        cached.get("weekday_profile"), dict
+    ):
+        return None
+    return cached
+
+
+def write_forecast_cache(alias: str, forecast: dict) -> None:
+    """Publish the profile into the shared store — by MERGE, never by replace.
+
+    statusline computes a superset of these fields off the same log: the
+    cross-window exchange rate, the per-model weekly profile, the dollars a
+    quota point costs. Writing this dict flat over the file dropped all of
+    them every time ccpace ran, and the tools that read them said "still
+    learning" until the next hourly rebuild. A writer owns the keys it
+    computes and nothing else.
+
+    The schema stamp is the claim that goes with it: the weekday numbers
+    below this line are the envelope model. Do not stamp what you did not
+    compute.
+    """
+    path = account_dir(alias) / "forecast.cache"
+    try:
+        merged: dict = {}
         if path.is_file():
             prev = json.loads(path.read_text())
-            if forecast["computed_at"] - prev.get("computed_at", 0) < FORECAST_REBUILD_SEC:
-                return
+            if isinstance(prev, dict):
+                if (
+                    prev.get("schema") == FORECAST_SCHEMA
+                    and forecast["computed_at"] - prev.get("computed_at", 0)
+                    < FORECAST_REBUILD_SEC
+                ):
+                    return  # someone of our own schema got here first
+                merged = prev
+        merged.update(forecast)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(forecast, separators=(",", ":")))
+        tmp.write_text(json.dumps(merged, separators=(",", ":")))
         tmp.replace(path)
     except (OSError, json.JSONDecodeError, ValueError):
         pass
 
 
-def forecast_line(
+def project_week(
     forecast: dict | None,
     entry: dict,
     now: datetime,
     access_end: datetime | None = None,
-) -> str | None:
-    """Project the rest of the 7d window on the weekday profile.
+) -> tuple[float, datetime | None] | None:
+    """Where the 7d pool lands, and when it dries if it does.
 
-    Silent below FORECAST_MIN_DAYS of history: a model with no data is
-    decoration. Unknown weekdays fall back to the profile's known-day
-    average. When access ends before the reset, the projection stops at
-    the boundary the budget already stops at — one horizon per block,
-    never two (the ledger's ┤, the budget's count, and this line must
-    all describe the same span).
+    Walks the rest of the window day by day against the learned weekday
+    profile, blending the last 24h over the first day so a hot streak
+    escalates before the weekday average catches up. Returns
+    `(landing_pct, dry_dt | None)` with the landing CAPPED AT 100, or None
+    when the profile has no standing to speak.
+
+    The cap is the point. Utilization cannot exceed the pool: a projection
+    of 177% is not a landing, it is a wall plus the burn that never happens
+    — and printed as "lands ~177%" beside a budget line saying 61% it made
+    the reader arbitrate between two numbers, neither of which was the
+    fact. The fact is the DATE the pool runs out, which is what dry_dt is
+    for.
+
+    Silent when:
+      - the profile is short of FORECAST_MIN_DAYS (a model with no data is
+        decoration);
+      - any weekday claims to average more than the whole pool per day —
+        no real one can, so the profile came from a broken accountant and
+        corrupt input earns silence, not a forecast;
+      - the window is younger than SEVEN_DAY_YOUNG_SEC — the profile
+        describes the windows before this one and the 24h blend describes
+        a day on the far side of the reset;
+      - nothing has been spent yet.
+
+    When access ends before the reset the walk stops at the boundary the
+    budget already stops at — one horizon per block, never two (the
+    ledger's ┤, the budget's count and this projection describe one span).
     """
-    if not forecast or forecast["days_history"] < FORECAST_MIN_DAYS:
+    if not forecast or forecast.get("days_history", 0) < FORECAST_MIN_DAYS:
         return None
-    tz = primary_tz() or datetime.now().astimezone().tzinfo
-    profile = forecast["weekday_profile"]
-    known = [v for v in profile.values() if v >= 0]
+    if entry["util"] <= 0 or entry["length"] - entry["remaining"] < SEVEN_DAY_YOUNG_SEC:
+        return None
+    profile = forecast.get("weekday_profile") or {}
+    rates = [v for v in profile.values() if isinstance(v, (int, float))]
+    if not rates or any(v > 100 for v in rates):
+        return None
+    known = [v for v in rates if v >= 0]
     if not known:
         return None
     fallback = sum(known) / len(known)
+    recent_24h = min(100.0, max(0.0, float(forecast.get("recent_24h", 0) or 0)))
 
+    tz = primary_tz() or datetime.now().astimezone().tzinfo
     horizon = entry["reset_dt"]
-    truncated = access_end is not None and access_end < horizon
-    if truncated:
+    if access_end is not None and access_end < horizon:
         horizon = access_end
 
-    projected = 0.0
+    remaining = 100 - entry["util"]
+    burned = 0.0
+    dry: datetime | None = None
     cursor = now.astimezone(tz)
     end = horizon.astimezone(tz)
     while cursor < end:
@@ -1107,17 +1292,21 @@ def forecast_line(
             hour=0, minute=0, second=0, microsecond=0
         )
         segment_end = min(day_end, end)
-        frac = (segment_end - cursor).total_seconds() / 86400
         rate = profile.get(str(cursor.date().toordinal() % 7), -1)
-        projected += (rate if rate >= 0 else fallback) * frac
+        if rate < 0:
+            rate = fallback
+        if (cursor - now).total_seconds() < 86400:
+            rate = max(rate, recent_24h)
+        seconds = (segment_end - cursor).total_seconds()
+        step = rate * seconds / 86400
+        if dry is None and rate > 0 and burned + step >= remaining:
+            dry = cursor + timedelta(
+                seconds=(remaining - burned) / rate * 86400
+            )
+        burned += step
         cursor = segment_end
+    return min(100.0, entry["util"] + burned), dry
 
-    lands = min(999, entry["util"] + projected)
-    span = "by period end" if truncated else "rest of week"
-    return (
-        f"forecast: +{projected:.0f}% {span} on your pattern"
-        f" · lands ~{lands:.0f}% ({forecast['days_history']}d history)"
-    )
 
 # --- prepaid credits ---
 
@@ -1310,12 +1499,22 @@ def attach_prepaid(
             data["_prepaid"] = credits
 
 
+# The strip's baseline: a window that ran and cost nothing. ▁ is the
+# shortest bar of the same Block Elements run as ▂▃▄▅▆▇█, so the zero line
+# and the bars share one font, one advance width and one baseline. It used
+# to be ˍ (U+02CD MODIFIER LETTER LOW MACRON) — a spacing modifier LETTER,
+# which terminals resolve through the text face while the bars fall back to
+# the box-drawing one, and the seam showed on every row that held both.
+# Burn therefore starts one rung up, at ▂; ▅ and above keep their old
+# thresholds, so a fully burned window reads the height it always did.
+LEDGER_BASE_GLYPH = "▁"
+
+
 def burn_glyph(cost: float) -> str:
-    """Height ∝ 7d points a window cost. Sub-1% is a zero-height bar (ˍ, on
-    the baseline), not a fill."""
+    """Height ∝ 7d points a window cost. Under a point is the baseline."""
     if cost < 1:
-        return "ˍ"
-    for hi, glyph in ((2, "▁"), (4, "▂"), (6, "▃"), (8, "▄"), (11, "▅"),
+        return LEDGER_BASE_GLYPH
+    for hi, glyph in ((2, "▂"), (4, "▃"), (7, "▄"), (11, "▅"),
                       (15, "▆"), (20, "▇")):
         if cost <= hi:
             return glyph
@@ -1335,8 +1534,8 @@ def format_window_ledger(
 
     One cell per 5h slot on a fixed grid from the period start, a thin gap
     at each local midnight so days read as clusters:
-      ▁▂▃▄▅▆▇█  a window that ran, height ∝ 7d points it burned
-      ˍ         a window that ran nothing (store was watching, saw no burn)
+      ▂▃▄▅▆▇█   a window that ran, height ∝ 7d points it burned
+      ▁         a window that ran nothing (store was watching, saw no burn)
       ░         unknown — outside the sample store's coverage
       ▮         the window you are in now
       ▯         a window still ahead of you (the hollow of ▮: an empty slot)
@@ -1345,6 +1544,17 @@ def format_window_ledger(
     Unknown and idle are deliberately different glyphs: drawing a gap in
     the record as an idle session is the one lie this surface must not
     tell.
+
+    The cells are a GRID anchored to the period start, not a row of your
+    real 5h windows — those are anchored to the 5h reset, which is only in
+    phase with the 7d one by coincidence, and 34 cells span 170h against a
+    168h period besides. That grid is what makes the history readable (it
+    is why a day's worth of windows lands under one day), and it is why the
+    hollow run right of ▮ can sit one cell either side of the budget line's
+    count. Measured across a full week of positions the gap is bounded at
+    one and the two agree about three times in four. The SENTENCE owns the
+    number: it comes from real clocks (windows_ahead), and this row does not
+    re-derive it off a drawing.
     """
     period_start = window_period_start(entry)
     now_ts = now.timestamp()
@@ -1382,9 +1592,9 @@ def format_window_ledger(
                 glyph = burn_glyph(costs[i])
                 # a sampled window under 1% and an idle one both mean "cost
                 # me nothing" — one glyph, one tint, no colour-only meaning
-                cells.append((glyph, "idle" if glyph == "ˍ" else "burn"))
+                cells.append((glyph, "idle" if glyph == LEDGER_BASE_GLYPH else "burn"))
             elif span and span[0] <= slot_start + WINDOW_5H_SEC and slot_start <= span[1]:
-                cells.append(("ˍ", "idle"))
+                cells.append((LEDGER_BASE_GLYPH, "idle"))
             else:
                 cells.append(("░", "unknown"))
         elif i == now_slot:
@@ -1546,8 +1756,35 @@ def format_cap_eta(dt: datetime, short: bool) -> str:
     return formatted.lstrip("@")
 
 
+def windows_ahead(seven: dict, five: dict | None) -> int:
+    """How many 5h windows are still AHEAD of the one you are in.
+
+    The current window is where you are, not what you have left: the ledger
+    already draws it as ▮ and the 5h row already prices it, so counting it
+    again makes `▮ + 9` read as ten. What remains once it closes is
+    (7d left - 5h left), and a partial window at the end of the week is
+    still a window you can spend, so that divides up.
+
+    Two properties fall out and both matter: the number holds still inside a
+    window (both clocks tick down together, so their difference does not
+    move) and it steps down by exactly one at each 5h rollover — a countdown
+    you can trust rather than a reading that drifts mid-window. With no live
+    5h window there is nothing to exclude and the whole 7d remainder is
+    ahead. Same definition as statusline's `windows_ahead`; the two surfaces
+    print this number beside each other and may not disagree.
+    """
+    rest = seven["remaining"] - (five["remaining"] if five else 0)
+    if rest <= 0:
+        return 0
+    return int((rest + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC)
+
+
 def build_advice(
-    data: dict, windows: list[dict], access: tuple[datetime, str] | None = None
+    data: dict,
+    windows: list[dict],
+    access: tuple[datetime, str] | None = None,
+    projection: tuple[float, datetime | None] | None = None,
+    now: datetime | None = None,
 ) -> list[tuple[str, str]]:
     """Derive pace warnings and weekly budgeting hints from window metrics.
 
@@ -1555,8 +1792,16 @@ def build_advice(
     before the 7d reset — a stated trial end, or the derived sub period
     end assumed binding (see get_access_end). Windows you cannot spend
     are not budget. Returns [(level, message)] with level "warn" or "info".
+
+    projection = project_week's (landing, dry) when the learned profile can
+    speak. It is the SAME number the budget line lands on and the same one
+    the dry warning is drawn from — one model per block. Without it the
+    landing falls back to linear pace, which can only ever restate the week
+    so far. Either way there is exactly one answer to "where does this end
+    up" on screen, and the line says which model gave it.
     """
     access_end, access_note = access if access else (None, "")
+    now = now or datetime.now(timezone.utc)
     advice: list[tuple[str, str]] = []
     seven_warned = False
 
@@ -1596,39 +1841,70 @@ def build_advice(
                 seven_warned = True
             advice.append(("warn", msg))
 
-    # budget line: one frame, left to right — runway, what even looks like,
-    # where you land; degrades when the week is nearly over
+    # The learned walk speaks before linear pace: it can warn on a quiet
+    # Friday about your heavy Tuesday, where pace can only ever measure the
+    # week so far — and a week whose Tuesday burns 28%/day and whose Sunday
+    # burns 6%/day is not a line. When it says the pool dries before the
+    # reset, that is the fact worth a warn row: a DATE, not a percentage
+    # above 100. Guarded by the same `seven_warned` flag the pace warning
+    # uses, so the block never carries two walls for one window.
     seven = next((w for w in windows if w["name"] == "7d"), None)
+    if seven and projection and projection[1] is not None and not seven_warned:
+        dry = projection[1]
+        gap = (seven["reset_dt"] - dry).total_seconds()
+        msg = (
+            f"7d dry ~{format_cap_eta(dry, False)}, "
+            f"{format_duration(int(gap))} before reset"
+        )
+        extra = data.get("extra_usage") or {}
+        msg += (
+            "; then extra usage billing"
+            if extra.get("is_enabled")
+            else "; then hard stop until reset"
+        )
+        advice.append(("warn", msg))
+        seven_warned = True
+
+    # budget line: one frame, left to right — runway, the ration, the
+    # landing; degrades when the week is nearly over
     if seven:
-        # same helper the strip anchors on: the number and the countable
-        # cells right of │ can never disagree
-        sessions_left = windows_left(seven)
+        five = next((w for w in windows if w["name"] == "5h"), None)
+        # windows AHEAD of the one you are in — the same definition
+        # statusline folds into `...▯(✕N)`, so the two surfaces cannot print
+        # different counts for the same week
+        sessions_left = windows_ahead(seven, five)
         capped_by_end = False
         if access_end and access_end < seven["reset_dt"]:
-            until_end = (access_end - (seven["reset_dt"] - timedelta(
-                seconds=seven["remaining"]
-            ))).total_seconds()
+            until_end = (access_end - now).total_seconds()
             end_windows = max(0, int((until_end + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC))
             if end_windows < sessions_left:
                 sessions_left = end_windows
                 capped_by_end = True
         headroom = 100 - seven["util"]
-        if sessions_left <= 1:
+        if sessions_left <= 0:
+            # the week ends inside the window you are in: nothing ahead of
+            # it, nothing to divide the headroom across
             parts = ["budget: last window"]
             if headroom > 0:
                 parts.append(f"{headroom}% left")
         else:
-            parts = [f"budget: ~{sessions_left} windows left"]
+            plural = "window" if sessions_left == 1 else "windows"
+            parts = [f"budget: ~{sessions_left} {plural} left"]
             if headroom > 0:
                 parts.append(f"{headroom / sessions_left:.1f}%/window stays even")
         if capped_by_end:
             # the quota outlives your access: say which boundary bit
             parts.append(access_note or f"access ends {format_cap_eta(access_end, False)}")
-        if seven["pace"] is not None and not seven_warned and not capped_by_end:
-            reset_str = format_reset_weekday(seven["reset_dt"]).lstrip("@")
-            # "heading" is the shared landing verb across surfaces
-            # (statusline.sh advisor + report say the same word)
-            parts.append(f"heading ~{seven['pace'] * 100:.0f}% at reset {reset_str}")
+        # Where the week ends up, from ONE model, named so the reader knows
+        # which. `N%/window stays even` above is a RATION — spend that much
+        # per window and the pool lands exactly on 100 — and this is a
+        # PREDICTION. Two different futures share the line, and without the
+        # attribution the reader has to guess which is which.
+        if not capped_by_end:
+            if projection:
+                parts.append(f"lands ~{projection[0]:.0f}% on your pattern")
+            elif seven["pace"] is not None and not seven_warned:
+                parts.append(f"lands ~{min(100.0, seven['pace'] * 100):.0f}% at this pace")
         advice.append(("info", " · ".join(parts)))
 
     return advice
@@ -1642,7 +1918,7 @@ def advice_segment_hot(seg: str) -> bool:
     """
     if seg.startswith(("period ends", "trial ends", "access ends", "sub ")):
         return True
-    if seg.startswith(("heading ~", "lands ~")):
+    if seg.startswith("lands ~"):
         try:
             return float(seg.split("~")[1].split("%")[0]) >= 90
         except (IndexError, ValueError):
@@ -2125,7 +2401,7 @@ def print_window_ledger_row(
     log_dir: Path | None = None,
     now: datetime | None = None,
     access_end: datetime | None = None,
-    samples: list[tuple[float, float, float, str]] | None = None,
+    samples: list[Sample] | None = None,
 ) -> None:
     """Print the 7d period's 5h windows as one row under the quota rows.
 
@@ -2176,9 +2452,9 @@ def format_usage_display(
         5h     22% ██░░░░░░░░  4h 11m   @20:59        +3%  1.4x
         7d     80% ████████▓░  3d 20h   @Thu 23 23:59       1.8x
         fable  97% █████████▓  3d 20h   @Wed 22 23:59       2.2x
-                   ▁▂▄ˍ▁▃█▂ˍˍ▁▅▃▂ˍ▁▂▄▃▁ˍ▂▃▄▂▁▮▯▯××××
-         !  7d pace 1.8x - cap ~Thu 23 09:00, 2d 15h before reset; then extra usage billing
-                   budget: ~19 windows left · 1.1%/window stays even
+                   ▂▃▅▁▂▄█▃▁▁▂▅▄▃▁▂▃▅▄▂▁▃▄▅▃▂▮▯▯××××
+         !  7d dry ~Thu 23 09:00, 2d 15h before reset; then extra usage billing
+                   budget: ~18 windows left · 1.1%/window stays even
     """
     now = datetime.now(timezone.utc)
     use_color = supports_color()
@@ -2356,15 +2632,24 @@ def format_usage_display(
             samples=samples,
         )
 
-    advice = build_advice(data, windows, access)
+    # The projection is built BEFORE the advice, because the advice is
+    # built around it: the budget line's landing and the dry warning are two
+    # readings of one walk, not two lines that happen to be adjacent. They
+    # used to be exactly that — a budget saying "heading ~61%" off linear
+    # pace with a forecast under it saying "lands ~177%" off a different
+    # model, on the same week, in the same breath.
+    projection = None
     if seven_entry and samples and label:
-        forecast = weekday_burn_forecast(samples, acct_uuid, now)
-        if forecast:
-            write_forecast_cache(alias, forecast)
-            if line := forecast_line(
-                forecast, seven_entry, now, access[0] if access else None
-            ):
-                advice.append(("info", line))
+        forecast = read_forecast_cache(alias)
+        if not forecast:
+            forecast = weekday_burn_forecast(samples, acct_uuid, now)
+            if forecast:
+                write_forecast_cache(alias, forecast)
+        projection = project_week(
+            forecast, seven_entry, now, access[0] if access else None
+        )
+
+    advice = build_advice(data, windows, access, projection, now)
 
     # advisor: pace warnings jut left for attention; the budget line sits
     # in the bar column, part of the block's reading order. Within it,

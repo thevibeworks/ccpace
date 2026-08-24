@@ -1,6 +1,6 @@
 [project]
 name = "ccpace"
-version = "0.2.0"
+version = "0.3.0"
 description = "Pace your Claude quota: multi-account usage monitor with a countable 5h-window budget, weekday forecasts, and push notifications"
 readme = "README.md"
 license = { text = "MIT" }
@@ -14,6 +14,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Utilities",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://thevibeworks.github.io/ccpace/"
@@ -32,3 +35,6 @@ include = ["ccpace.py"]
 
 [tool.hatch.build.targets.sdist]
 include = ["ccpace.py", "README.md", "LICENSE", "docs/data.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["t"]

@@ -10,9 +10,8 @@ forecasts learned from your own history, and push notifications.
 5h     7% █▒░░░░░░░░  3h 48m   @19:00              0.3x
 7d     3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
 fable  3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
-           ˍˍ▁▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯┤
-           budget: ~24 windows left · 4.0%/window stays even · period ends ~Aug 11
-           forecast: +38% rest of week on your pattern · lands ~41% (12d history)
+           ▁▁▂▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯┤
+           budget: ~23 windows left · 4.2%/window stays even · period ends ~Aug 11
 ```
 
 ## Install
@@ -47,13 +46,19 @@ sorted by tier.
   usage spend, prepaid credit balance when nonzero.
 - Dual bars merge usage with window-elapsed time: `█` both passed, `▓`
   usage ahead (hot), `▒` time ahead (headroom), `░` untouched.
-- The window ledger: the 7d period as its 5h windows, one cell each.
-  `▁▂▃▄▅▆▇█` what a window burned (from your sample history), `·` idle,
-  `░` unknown, `▮` now, `▯` ahead, `×` won't be covered at current pace,
-  `┤` access ends there. Cells right of `▮` are countable — they equal
-  the advisor's "windows left".
-- The advisor: pace warnings (`!`), budget per remaining window, and a
-  weekday forecast once it has 3+ days of your history.
+- The window ledger: the 7d period as its 5h slots, one cell each.
+  `▂▃▄▅▆▇█` what a slot burned (from your sample history), `▁` the
+  baseline (ran, cost under a point — the shortest bar of the same block,
+  so the zero line and the bars share one font), `░` unknown, `▮` now,
+  `▯` ahead, `×` won't be covered at current pace, `┤` access ends there.
+  The cells are a grid anchored to the period start, so read them for
+  shape; the budget line's count comes from the clocks.
+- The advisor: walls (`!`) and one budget line — windows left, the ration
+  that keeps you even, and where the week lands. The landing comes from
+  your own weekday profile once there are two weeks of history (`on your
+  pattern`), from linear pace before that (`at this pace`). One model per
+  block, named, so two numbers on screen never describe the same week
+  differently.
 - Budget math truncates at the subscription period end (derived from
   the billing anniversary — the API exposes no cancel/renew date, so
   the boundary is assumed and marked with `~`).
@@ -105,9 +110,24 @@ writing; `CCPACE_DATA_DIR` relocates the store.
   is locked out.
 - The grammar — rows, ledger, provenance, requests — is one page:
   [DESIGN.md](DESIGN.md).
-- Forecasts are your own history extrapolated, not a promise. Below 3
-  days of samples the forecast stays silent instead of guessing.
+- Forecasts are your own history extrapolated, not a promise. Below two
+  weeks of samples the learned walk stays silent and the line falls back
+  to linear pace, saying which one spoke. It also stays silent on a 7d
+  window younger than a day, and on a profile whose numbers are
+  impossible — a projection you cannot check is worse than none.
 - Not affiliated with Anthropic.
+
+## Development
+
+```sh
+make check    # the test suite
+make run      # this tree, once, against your real accounts
+make build    # wheel + sdist
+```
+
+Tests use their own `CCPACE_DATA_DIR`; nothing in `t/` touches the real
+store. The suite is where the burn model lives in readable form — if you
+change how burn is counted, that is the file to argue with first.
 
 ## License
 
