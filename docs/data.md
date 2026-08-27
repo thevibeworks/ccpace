@@ -58,6 +58,13 @@ yet) does ccpace fall back to the account's own directories. Cross-account
 mixing is the classic corruption here (statusline observed 9000%/day burn
 rates) — never trust placement alone.
 
+A row with no `user.uuid` (the field is younger than the log) is dropped
+from every uuid-partitioned read, and the drop is counted (`corpus.
+dropped_no_uuid`). Not guessed: some of those rows carry an email that
+would identify them, and guessing identity on a store that already
+proved it interleaves accounts is how burn rates get manufactured. Loss
+is acceptable; silent loss is not.
+
 ## usage.jsonl records
 
 One JSON object per line. `type` discriminates; readers skip unknown
@@ -138,6 +145,15 @@ writer can rotate without eating the other's history. Readers read
   When a fresh cache of our own schema is already there, read it rather
   than recompute: same numbers, one scan. See claude-code-statusline
   `docs/api/state-dir.md`, "The co-writer contract".
+
+  `corpus` is the stamp that says WHICH samples the model was run over —
+  `{uuid, files, samples, dropped_no_uuid, oldest}`. `schema` versions
+  the model and cannot carry this: two writers that agree on envelope
+  burn and read different stores both pass the gate, and the same
+  account then gets `days_history: 28` from one binary and `301` from
+  the other depending on which rendered last. The stamp is informative,
+  not a gate; a reader that wants to know why two caches disagree reads
+  it, and a rebuild overwrites it.
 
 ## Shared fetch pool
 

@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.3.0
+# Version: 0.3.1
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -76,7 +76,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -892,19 +892,66 @@ def all_store_paths(log_dir: Path | None = None) -> list[Path]:
     return [p for p in paths if p.is_file()]
 
 
+class Corpus(NamedTuple):
+    """What a history load actually read, so a number derived from it can
+    say which samples it stands on. Published into forecast.cache as the
+    `corpus` stamp (docs/data.md): two writers can agree on the model and
+    still disagree on the corpus, and `schema` cannot tell them apart."""
+
+    uuid: str
+    files: int
+    samples: int           # rows kept for this account
+    dropped_no_uuid: int   # rows that carried no uuid; refused, not guessed
+    dropped_other: int     # rows of other accounts in the same stores
+    oldest: int            # epoch of the oldest kept row, 0 when none
+
+    def stamp(self) -> dict:
+        return {
+            "uuid": self.uuid,
+            "files": self.files,
+            "samples": self.samples,
+            "dropped_no_uuid": self.dropped_no_uuid,
+            "oldest": self.oldest,
+        }
+
+
+def load_account_corpus(
+    alias: str, account_uuid: str, log_dir: Path | None = None
+) -> tuple[list[Sample], Corpus]:
+    """The samples that belong to this account, wherever they were written,
+    and an account of what was read to find them.
+
+    With the account uuid (from its profile) every store is read and rows
+    are partitioned by uuid — the docs/data.md contract for readers. A row
+    without a uuid is dropped, and counted: thirteen of the ninety-three in
+    one real store carry an email that would identify them, and guessing
+    identity on a log that already proved it interleaves accounts is how a
+    9000%/day burn rate gets manufactured. The drop is visible, never
+    silent. Without a uuid (no profile yet) only the account's own stores
+    are trusted, unpartitioned: narrower, but never another account's
+    history."""
+    if account_uuid:
+        paths = all_store_paths(log_dir)
+        rows = load_usage_samples(paths)
+        kept = [r for r in rows if r.uuid == account_uuid]
+        no_uuid = sum(1 for r in rows if not r.uuid)
+    else:
+        paths = own_store_paths(alias, log_dir)
+        rows = load_usage_samples(paths)
+        kept, no_uuid = rows, 0
+    corpus = Corpus(
+        account_uuid, len(paths), len(kept), no_uuid,
+        len(rows) - len(kept) - no_uuid,
+        int(min((r.ts for r in kept), default=0)),
+    )
+    return kept, corpus
+
+
 def load_account_history(
     alias: str, account_uuid: str, log_dir: Path | None = None
 ) -> list[Sample]:
-    """The samples that belong to this account, wherever they were written.
-
-    With the account uuid (from its profile) every store is read and rows
-    are partitioned by uuid — the docs/data.md contract for readers.
-    Without it (no profile yet) only the account's own stores are trusted,
-    unpartitioned: narrower, but never another account's history."""
-    if account_uuid:
-        rows = load_usage_samples(all_store_paths(log_dir))
-        return [r for r in rows if r.uuid == account_uuid]
-    return load_usage_samples(own_store_paths(alias, log_dir))
+    """load_account_corpus for callers that only want the rows."""
+    return load_account_corpus(alias, account_uuid, log_dir)[0]
 
 
 # parsed stores, keyed by path -> (mtime, size, rows): watch mode re-reads
@@ -1115,13 +1162,15 @@ def weekday_burn_forecast(
     uses — two surfaces, one model, or the numbers they print about the
     same week cannot both be true.
 
-    Rows carrying a different account uuid are excluded; unlabeled rows
-    (legacy stores) are kept because alias-scoped dirs are single-account
-    by construction.
+    One uuid rule, the same one load_account_corpus applies: with an
+    account uuid, only rows that carry it. Unlabeled rows used to slip
+    through here on the theory that alias-scoped dirs are single-account —
+    they are not (the same store held twelve uuids), and two filters that
+    disagree are a leak waiting for a caller that skips the first.
     """
     tz = primary_tz() or datetime.now().astimezone().tzinfo
     rows = sorted(
-        (s for s in samples if not account_uuid or not s.uuid or s.uuid == account_uuid),
+        (s for s in samples if not account_uuid or s.uuid == account_uuid),
         key=lambda s: s.ts,
     )
     if not rows:
@@ -2621,7 +2670,10 @@ def format_usage_display(
     # directory's — where a sample landed depends on who fetched it.
     alias = get_alias_from_label(label) if label else ""
     acct_uuid = ((profile or {}).get("account") or {}).get("uuid") or ""
-    samples = load_account_history(alias, acct_uuid, log_dir) if label else []
+    corpus = None
+    samples: list[Sample] = []
+    if label:
+        samples, corpus = load_account_corpus(alias, acct_uuid, log_dir)
 
     if seven_entry and shutil.get_terminal_size().columns >= WEEK_STRIP_MIN_COLS:
         print_window_ledger_row(
@@ -2644,6 +2696,8 @@ def format_usage_display(
         if not forecast:
             forecast = weekday_burn_forecast(samples, acct_uuid, now)
             if forecast:
+                if corpus:
+                    forecast["corpus"] = corpus.stamp()
                 write_forecast_cache(alias, forecast)
         projection = project_week(
             forecast, seven_entry, now, access[0] if access else None

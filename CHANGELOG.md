@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.3.1 (2026-08-27)
+
+Two readers, one rule. `load_account_history` partitioned by uuid and
+dropped rows that carried none; `weekday_burn_forecast` let those same
+rows through, on the theory that alias-scoped directories are
+single-account. They are not — one real store held twelve uuids — and
+two filters that disagree are a leak waiting for the first caller that
+skips the loader. The forecast now applies the loader's rule and nothing
+else.
+
+The drop is counted. A row without a uuid is refused, never guessed
+(thirteen of ninety-three in one store carry an email that would
+identify them, which is exactly the temptation to resist on a log that
+has already interleaved accounts), but a reader that discards
+identifiable observations silently will discard a larger number just as
+quietly. `load_account_corpus` returns the samples and a `Corpus`: files
+read, rows kept, rows dropped for no uuid, rows of other accounts, and
+the oldest kept timestamp.
+
+That corpus is stamped into `forecast.cache`. `schema` versions the
+MODEL and cannot say which samples it ran over: statusline reads one
+directory, ccpace reads every store under the root, both count burn the
+same way, both pass the gate — and the same account reads
+`days_history: 28` or `301` depending on which binary rendered last.
+`corpus: {uuid, files, samples, dropped_no_uuid, oldest}` makes that
+visible in one `jq`. Informative, not a gate; `docs/data.md` has the
+contract.
+
 ## v0.3.0 (2026-08-24)
 
 The forecast was wrong, and it was wrong in the way that is hardest to

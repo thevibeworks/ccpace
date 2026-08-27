@@ -1,6 +1,6 @@
 [project]
 name = "ccpace"
-version = "0.3.0"
+version = "0.3.1"
 description = "Pace your Claude quota: multi-account usage monitor with a countable 5h-window budget, weekday forecasts, and push notifications"
 readme = "README.md"
 license = { text = "MIT" }

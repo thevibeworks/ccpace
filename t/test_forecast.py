@@ -313,3 +313,43 @@ def test_read_accepts_only_a_fresh_cache_of_our_own_schema(store, utc_now):
 
     (store / "forecast.cache").write_text("{not json")
     assert cc.read_forecast_cache("") is None
+
+
+def test_history_drops_uuidless_rows_and_counts_them(store, utc_now):
+    """A row without a uuid is loss dressed as filtering unless the drop is
+    counted: readers used to discard identifiable observations silently."""
+    root = store
+    (root / "accounts" / "work").mkdir(parents=True)
+    ts = int(utc_now.timestamp())
+    reset = utc_now.isoformat()
+
+    def row(uuid, t):
+        return json.dumps({
+            "type": "usage", "timestamp": t,
+            "user": {"uuid": uuid} if uuid else {},
+            "five_hour": {"utilization": 1, "resets_at": reset},
+            "seven_day": {"utilization": 5, "resets_at": reset},
+        })
+
+    (root / "usage.jsonl").write_text(
+        "\n".join([row("acct-A", ts - 30), row("", ts - 20), row("acct-B", ts - 10)]) + "\n"
+    )
+    (root / "accounts" / "work" / "usage.jsonl").write_text(row("acct-A", ts) + "\n")
+
+    rows, corpus = cc.load_account_corpus("work", "acct-A")
+    assert [r.ts for r in rows] == [ts - 30, ts]  # both dirs, one account
+    assert corpus.files == 2
+    assert corpus.samples == 2
+    assert corpus.dropped_no_uuid == 1
+    assert corpus.dropped_other == 1
+    assert corpus.oldest == ts - 30
+    assert corpus.stamp()["uuid"] == "acct-A"
+
+
+def test_weekday_profile_applies_one_uuid_rule(utc_now):
+    """Unlabeled rows do not slip into a uuid-partitioned forecast: the loader
+    drops them, and the forecast must not disagree with the loader."""
+    rows = _three_weeks(utc_now, 20) + _three_weeks(utc_now, 90, uuid="")
+    got = cc.weekday_burn_forecast(rows, "acct-A", utc_now)
+    assert got is not None
+    assert all(19 <= v <= 21 for v in got["weekday_profile"].values())
