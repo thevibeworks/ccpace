@@ -31,6 +31,9 @@ Reading the output:
   the PREDICTION (`lands ~N%`, tagged `on your pattern` when it comes
   from the learned weekday profile and `at this pace` when it is linear).
   Two different futures; do not blur them when you report.
+- `~N awake` between the two is the runway with the hours this account
+  rests taken out, and it is the RATION's denominator when present. Quote
+  both counts. No ration at all means nothing ahead is awake.
 
 Answer with the numbers, not the raw dump: utilization, time to reset,
 windows left, where it lands and by which model, and whether a wall

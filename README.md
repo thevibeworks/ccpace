@@ -59,6 +59,10 @@ sorted by tier.
   pattern`), from linear pace before that (`at this pace`). One model per
   block, named, so two numbers on screen never describe the same week
   differently.
+- The forecast learns the hours you keep, not just the days: burn is
+  shaped by local hour, so a dry-out lands where you will see it instead
+  of at 03:00, and `~6 awake` beside `~9 windows left` rations the pool
+  across the windows you are actually up for.
 - Budget math truncates at the subscription period end (derived from
   the billing anniversary — the API exposes no cancel/renew date, so
   the boundary is assumed and marked with `~`).

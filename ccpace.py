@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.3.1
+# Version: 0.4.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -70,13 +70,14 @@ import subprocess
 import sys
 import termios
 import tty
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -135,6 +136,15 @@ FORECAST_HALF_LIFE_DAYS = 14.0
 # Both signals, or the envelope holds.
 FORECAST_RESET_CONFIRM = 2
 FORECAST_RESET_DROP = 15
+# hour_profile: 24 burn MULTIPLIERS by local hour, mean 1.0, published into
+# the same shared cache. Claude Code can work around the clock; the human
+# cannot, and a walk that burns flat through the night puts the dry-out at
+# 03:00 — a false alarm at 11pm and a missed warning at 09:00. The floor is
+# the hedge for the occasional overnight autonomous run: a rest hour projects
+# a tenth of a uniform hour, never zero. REST_MULT_MAX is the reading rule
+# both surfaces share (docs/statusline-interop.md): below it, you are asleep.
+FORECAST_HOUR_FLOOR = 0.1
+REST_MULT_MAX = 0.25
 # A 7d window younger than this has no evidence of its own: the profile
 # describes the windows BEFORE it, and the recent-24h blend describes a day
 # that sits on the far side of the reset.
@@ -1084,9 +1094,9 @@ def build_window_history(
 
 def seven_day_envelope(
     rows: list[Sample], now: datetime
-) -> tuple[dict[int, float], float, float]:
+) -> tuple[dict[int, float], float, float, dict[tuple[int, int], float]]:
     """Walk the 7d series as a monotone envelope; return (burn per local day,
-    last 24h, last 48h).
+    last 24h, last 48h, burn per local (day, hour)).
 
     Utilization inside one window only ever climbs. A sample below the
     running max is therefore one of two things, and they need opposite
@@ -1109,10 +1119,16 @@ def seven_day_envelope(
 
     The first sample is a BASELINE, not burn: it shows where the account
     already stood, not the climb to there.
+
+    Every credited delta lands twice: on its local day, and on its local
+    (day, hour). The hour is the rest signal — hours that never burn across
+    weeks are hours you sleep — and it costs one dict write on a pass that
+    already knows the timestamp.
     """
     tz = primary_tz() or datetime.now().astimezone().tzinfo
     now_ts = now.timestamp()
     daily: dict[int, float] = {}
+    hourly: dict[tuple[int, int], float] = {}
     recent_24h = recent_48h = 0.0
     env: float | None = None
     window = 0.0
@@ -1139,13 +1155,15 @@ def seven_day_envelope(
         if util <= env:
             continue
         delta, env = util - env, util
-        day = datetime.fromtimestamp(sample.ts, tz).date().toordinal()
+        local = datetime.fromtimestamp(sample.ts, tz)
+        day = local.date().toordinal()
         daily[day] = daily.get(day, 0.0) + delta
+        hourly[(day, local.hour)] = hourly.get((day, local.hour), 0.0) + delta
         if now_ts - sample.ts <= 86400:
             recent_24h += delta
         if now_ts - sample.ts <= 2 * 86400:
             recent_48h += delta
-    return daily, recent_24h, recent_48h
+    return daily, recent_24h, recent_48h, hourly
 
 
 def weekday_burn_forecast(
@@ -1162,6 +1180,14 @@ def weekday_burn_forecast(
     uses — two surfaces, one model, or the numbers they print about the
     same week cannot both be true.
 
+    `hour_profile` is the same weighted burn read the other way: 24 local
+    hours normalized to mean 1.0, so the rate at hour h is
+    `weekday_rate * mult[h]` and integrating a whole day still reproduces
+    the weekday total exactly. Floored and renormalized HERE, at build time,
+    because the cache is shared and two readers rounding their own way is
+    two answers to one week. Omitted entirely when nothing was learned —
+    readers gate on days_history, so there is no separate day gate here.
+
     One uuid rule, the same one load_account_corpus applies: with an
     account uuid, only rows that carry it. Unlabeled rows used to slip
     through here on the theory that alias-scoped dirs are single-account —
@@ -1177,7 +1203,7 @@ def weekday_burn_forecast(
         return None
 
     now_ts = now.timestamp()
-    daily, recent_24h, recent_48h = seven_day_envelope(rows, now)
+    daily, recent_24h, recent_48h, hourly = seven_day_envelope(rows, now)
     if not daily:
         return None
 
@@ -1205,7 +1231,7 @@ def weekday_burn_forecast(
         str(d): round(burns[d] / weights[d], 2) if weights.get(d) else -1
         for d in range(7)
     }
-    return {
+    forecast = {
         "schema": FORECAST_SCHEMA,
         "computed_at": int(now_ts),
         "days_history": sum(1 for d in daily if d < today),
@@ -1213,6 +1239,23 @@ def weekday_burn_forecast(
         "recent_48h": round(recent_48h, 2),
         "weekday_profile": profile,
     }
+
+    hour_burn = [0.0] * 24
+    for (day, hour), burn in hourly.items():
+        if day >= today:
+            continue  # same rule as the weekdays: today is partial
+        hour_burn[hour] += 0.5 ** ((today - day) / FORECAST_HALF_LIFE_DAYS) * burn
+    total = sum(hour_burn)
+    if total > 0:
+        # share of the week's burn * 24 = a multiplier on the daily mean;
+        # floor first (a rest hour is a tenth of a uniform hour, not zero),
+        # then scale the floored shape back to mean exactly 1
+        mult = [max(b / total * 24, FORECAST_HOUR_FLOOR) for b in hour_burn]
+        scale = 24 / sum(mult)
+        forecast["hour_profile"] = {
+            str(h): round(m * scale, 2) for h, m in enumerate(mult)
+        }
+    return forecast
 
 
 def read_forecast_cache(alias: str) -> dict | None:
@@ -1276,6 +1319,54 @@ def write_forecast_cache(alias: str, forecast: dict) -> None:
         pass
 
 
+def hour_multipliers(forecast: dict | None) -> list[float] | None:
+    """The learned shape of a day, or None when there is nothing to trust.
+
+    24 multipliers by local hour, already floored and normalized by whoever
+    built them (see weekday_burn_forecast) — a reader only checks that what
+    it got is that shape: all 24 keys, every value numeric in [0, 24], mean
+    in [0.9, 1.1]. Anything else is a co-writer's dialect or a truncated
+    write, and the answer is None, which every caller reads as flat.
+
+    A bad hour shape NEVER silences the walk. The weekday guards decide
+    whether a forecast exists at all; this one only decides whether the
+    forecast knows when you sleep.
+    """
+    profile = (forecast or {}).get("hour_profile")
+    if not isinstance(profile, dict):
+        return None
+    mult: list[float] = []
+    for hour in range(24):
+        value = profile.get(str(hour))
+        if not isinstance(value, (int, float)) or not 0 <= value <= 24:
+            return None
+        mult.append(float(value))
+    if not 0.9 <= sum(mult) / 24 <= 1.1:
+        return None
+    return mult
+
+
+def local_hour_segments(
+    start: datetime, end: datetime, tz
+) -> Iterator[tuple[datetime, datetime, float]]:
+    """Cut [start, end) at LOCAL hour boundaries; yield (utc, local, seconds).
+
+    The step is measured in absolute seconds off the local clock's own
+    minute, never by adding an hour to a wall clock: on a spring-forward day
+    02:00 + 1h is 03:00 at the SAME instant, and a walk that steps by wall
+    time stands still there forever. Segments are at most an hour, so a week
+    is at most 169 of them.
+    """
+    cursor = start.astimezone(timezone.utc)
+    stop = end.astimezone(timezone.utc)
+    while cursor < stop:
+        local = cursor.astimezone(tz)
+        span = 3600 - (local.minute * 60 + local.second + local.microsecond / 1e6)
+        segment_end = min(cursor + timedelta(seconds=span), stop)
+        yield cursor, local, (segment_end - cursor).total_seconds()
+        cursor = segment_end
+
+
 def project_week(
     forecast: dict | None,
     entry: dict,
@@ -1284,11 +1375,22 @@ def project_week(
 ) -> tuple[float, datetime | None] | None:
     """Where the 7d pool lands, and when it dries if it does.
 
-    Walks the rest of the window day by day against the learned weekday
-    profile, blending the last 24h over the first day so a hot streak
-    escalates before the weekday average catches up. Returns
-    `(landing_pct, dry_dt | None)` with the landing CAPPED AT 100, or None
-    when the profile has no standing to speak.
+    Walks the rest of the window hour by local hour against the learned
+    weekday profile, shaped by the learned hour profile and blending the
+    last 24h over the first day so a hot streak escalates before the weekday
+    average catches up. Returns `(landing_pct, dry_dt | None)` with the
+    landing CAPPED AT 100, or None when the profile has no standing to speak.
+
+    The hour shape is what keeps the dry-out honest. A flat walk spends the
+    night at the daytime rate and puts the wall at 03:00 — a false alarm at
+    11pm, a missed warning at 09:00. With `hour_profile` absent or invalid
+    every multiplier is 1 and this is the day walk exactly, to the point
+    where the tests assert it.
+
+    The 24h blend rule is unchanged and now lands where it says it does:
+    it is tested at the start of each SEGMENT, and a segment used to be a
+    calendar day, so a blend that began at 15h ran to 39h. An hour segment
+    ends it at 24h.
 
     The cap is the point. Utilization cannot exceed the pool: a projection
     of 177% is not a landing, it is a wall plus the burn that never happens
@@ -1327,6 +1429,7 @@ def project_week(
     recent_24h = min(100.0, max(0.0, float(forecast.get("recent_24h", 0) or 0)))
 
     tz = primary_tz() or datetime.now().astimezone().tzinfo
+    mult = hour_multipliers(forecast) or [1.0] * 24
     horizon = entry["reset_dt"]
     if access_end is not None and access_end < horizon:
         horizon = access_end
@@ -1334,26 +1437,19 @@ def project_week(
     remaining = 100 - entry["util"]
     burned = 0.0
     dry: datetime | None = None
-    cursor = now.astimezone(tz)
-    end = horizon.astimezone(tz)
-    while cursor < end:
-        day_end = (cursor + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        segment_end = min(day_end, end)
-        rate = profile.get(str(cursor.date().toordinal() % 7), -1)
+    for cursor, local, seconds in local_hour_segments(now, horizon, tz):
+        rate = profile.get(str(local.date().toordinal() % 7), -1)
         if rate < 0:
             rate = fallback
         if (cursor - now).total_seconds() < 86400:
             rate = max(rate, recent_24h)
-        seconds = (segment_end - cursor).total_seconds()
+        rate *= mult[local.hour]
         step = rate * seconds / 86400
         if dry is None and rate > 0 and burned + step >= remaining:
-            dry = cursor + timedelta(
-                seconds=(remaining - burned) / rate * 86400
-            )
+            dry = (
+                cursor + timedelta(seconds=(remaining - burned) / rate * 86400)
+            ).astimezone(tz)
         burned += step
-        cursor = segment_end
     return min(100.0, entry["util"] + burned), dry
 
 
@@ -1828,12 +1924,41 @@ def windows_ahead(seven: dict, five: dict | None) -> int:
     return int((rest + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC)
 
 
+def awake_windows(
+    mult: list[float], now: datetime, start_sec: float, end_sec: float
+) -> int:
+    """How many of the windows ahead you are actually awake for.
+
+    Same span `windows_ahead` counts — from the end of the window you are in
+    to the end of the week — with the hours you sleep taken out of it: an
+    hour whose multiplier is under REST_MULT_MAX is rest, and rest is not
+    runway. Ceils for the same reason windows_ahead ceils: a partial window
+    is still a window you can spend.
+
+    This is what makes the ration honest. Dividing the headroom by calendar
+    windows rations you across windows you sleep through, so the number the
+    reader is asked to hit is lower than the one they can actually spend.
+    Callers clamp it to windows_ahead (the two describe one horizon, and the
+    awake count may never exceed the count it refines).
+    """
+    tz = primary_tz() or datetime.now().astimezone().tzinfo
+    start = now + timedelta(seconds=max(0.0, start_sec))
+    awake = 0.0
+    for _, local, seconds in local_hour_segments(
+        start, now + timedelta(seconds=end_sec), tz
+    ):
+        if mult[local.hour] >= REST_MULT_MAX:
+            awake += seconds
+    return int((awake + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC)
+
+
 def build_advice(
     data: dict,
     windows: list[dict],
     access: tuple[datetime, str] | None = None,
     projection: tuple[float, datetime | None] | None = None,
     now: datetime | None = None,
+    forecast: dict | None = None,
 ) -> list[tuple[str, str]]:
     """Derive pace warnings and weekly budgeting hints from window metrics.
 
@@ -1848,6 +1973,11 @@ def build_advice(
     landing falls back to linear pace, which can only ever restate the week
     so far. Either way there is exactly one answer to "where does this end
     up" on screen, and the line says which model gave it.
+
+    forecast = the same cache project_week walked. Only the hour shape is
+    read here, and only to say how many of the windows ahead you are awake
+    for — the ration is what you can SPEND, and you cannot spend a window
+    you sleep through.
     """
     access_end, access_note = access if access else (None, "")
     now = now or datetime.now(timezone.utc)
@@ -1922,12 +2052,14 @@ def build_advice(
         # statusline folds into `...▯(✕N)`, so the two surfaces cannot print
         # different counts for the same week
         sessions_left = windows_ahead(seven, five)
+        horizon_sec = seven["remaining"]
         capped_by_end = False
         if access_end and access_end < seven["reset_dt"]:
             until_end = (access_end - now).total_seconds()
             end_windows = max(0, int((until_end + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC))
             if end_windows < sessions_left:
                 sessions_left = end_windows
+                horizon_sec = until_end
                 capped_by_end = True
         headroom = 100 - seven["util"]
         if sessions_left <= 0:
@@ -1939,8 +2071,27 @@ def build_advice(
         else:
             plural = "window" if sessions_left == 1 else "windows"
             parts = [f"budget: ~{sessions_left} {plural} left"]
-            if headroom > 0:
-                parts.append(f"{headroom / sessions_left:.1f}%/window stays even")
+            # The runway counts clock windows; the ration divides by the ones
+            # you are awake for, and the clause beside it names the
+            # denominator so the line stays self-describing. `~0 awake` is
+            # not a ration, it is a rest day: say the count and stop, rather
+            # than divide by a zero or print a rate nobody can spend.
+            ration_by = sessions_left
+            mult = hour_multipliers(forecast)
+            if mult and (forecast or {}).get("days_history", 0) >= FORECAST_MIN_DAYS:
+                awake = min(
+                    sessions_left,
+                    awake_windows(
+                        mult, now, five["remaining"] if five else 0, horizon_sec
+                    ),
+                )
+                if awake == 0:
+                    ration_by = 0
+                elif awake < sessions_left:
+                    parts.append(f"~{awake} awake")
+                    ration_by = awake
+            if headroom > 0 and ration_by > 0:
+                parts.append(f"{headroom / ration_by:.1f}%/window stays even")
         if capped_by_end:
             # the quota outlives your access: say which boundary bit
             parts.append(access_note or f"access ends {format_cap_eta(access_end, False)}")
@@ -2691,6 +2842,7 @@ def format_usage_display(
     # pace with a forecast under it saying "lands ~177%" off a different
     # model, on the same week, in the same breath.
     projection = None
+    forecast = None
     if seven_entry and samples and label:
         forecast = read_forecast_cache(alias)
         if not forecast:
@@ -2703,7 +2855,7 @@ def format_usage_display(
             forecast, seven_entry, now, access[0] if access else None
         )
 
-    advice = build_advice(data, windows, access, projection, now)
+    advice = build_advice(data, windows, access, projection, now, forecast)
 
     # advisor: pace warnings jut left for attention; the budget line sits
     # in the bar column, part of the block's reading order. Within it,

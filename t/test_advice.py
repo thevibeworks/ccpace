@@ -8,9 +8,10 @@ the reader to tell which one was the forecast.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import timedelta
 
-from conftest import cc, five_entry, flat_profile, seven_entry
+from conftest import cc, five_entry, flat_profile, hour_shape, seven_entry
 
 DAY = 86400
 
@@ -124,6 +125,83 @@ def test_the_ration_and_the_prediction_are_different_clauses(utc_now):
     projection = cc.project_week(flat_profile(10), seven, utc_now)
     line = budget_of(advice(utc_now, [five, seven], projection=projection))
     assert "%/window stays even" in line and "lands ~" in line
+
+
+# --- the hours you keep --------------------------------------------------
+
+def rested(rate: float = 10, *, days: int = 30, rest: Iterable[int] = range(8)) -> dict:
+    """A learned profile that knows this account sleeps 00:00-08:00."""
+    forecast = flat_profile(rate, days=days)
+    forecast["hour_profile"] = hour_shape(rest)
+    return forecast
+
+
+def test_the_ration_divides_by_the_windows_you_are_awake_for(utc_tz, utc_now):
+    """Nine windows of clock, six of them waking. Dividing 56 points across
+    all nine rations the reader across windows they sleep through, and the
+    honest number to spend per window they will actually see is higher."""
+    seven = seven_entry(44, 48 * 3600, utc_now)
+    five = five_entry(10, 3 * 3600, utc_now)
+    line = budget_of(advice(utc_now, [five, seven], forecast=rested()))
+    assert "~9 windows left · ~6 awake · 9.3%/window stays even" in line
+
+
+def test_the_awake_clause_waits_for_the_same_evidence_the_walk_does(utc_tz, utc_now):
+    """Under two weeks of history there is no shape to speak of, and the
+    ration goes back to counting clock windows."""
+    seven = seven_entry(44, 48 * 3600, utc_now)
+    five = five_entry(10, 3 * 3600, utc_now)
+    line = budget_of(advice(utc_now, [five, seven], forecast=rested(days=10)))
+    assert "awake" not in line
+    assert "6.2%/window stays even" in line
+
+
+def test_an_account_that_burns_around_the_clock_gets_no_extra_clause(utc_tz, utc_now):
+    """Nothing to refine: every window ahead is one you are up for, and a
+    clause that restates the count beside it is noise."""
+    seven = seven_entry(44, 48 * 3600, utc_now)
+    five = five_entry(10, 3 * 3600, utc_now)
+    forecast = flat_profile(10)
+    forecast["hour_profile"] = {str(h): 1.0 for h in range(24)}
+    line = budget_of(advice(utc_now, [five, seven], forecast=forecast))
+    assert "awake" not in line
+    assert "6.2%/window stays even" in line
+
+
+def test_a_corrupt_shape_leaves_the_budget_exactly_as_it_was(utc_tz, utc_now):
+    seven = seven_entry(44, 48 * 3600, utc_now)
+    five = five_entry(10, 3 * 3600, utc_now)
+    forecast = flat_profile(10)
+    forecast["hour_profile"] = {"0": 1.0}
+    assert budget_of(advice(utc_now, [five, seven], forecast=forecast)) == budget_of(
+        advice(utc_now, [five, seven])
+    )
+
+
+def test_nothing_awake_ahead_states_the_count_and_stops(utc_tz, utc_now):
+    """Two windows left and you sleep through both. `~0 awake` is not a
+    ration and `28.0%/window` is not a rate anyone can spend, so the line
+    says what is left of the week and nothing it cannot stand behind."""
+    night = utc_now.replace(hour=22)
+    seven = seven_entry(44, 9 * 3600, night)
+    five = five_entry(10, 2 * 3600, night)
+    line = budget_of(advice(night, [five, seven], forecast=rested()))
+    assert line == "budget: ~2 windows left"
+
+
+def test_the_awake_count_stops_where_access_does(utc_tz, utc_now):
+    """One horizon per block. With the budget truncated to a day of access
+    left, the awake count describes that day — not the five days of quota
+    behind it, which would put `~5 awake` beside `~5 windows left`."""
+    seven = seven_entry(30, 5 * DAY, utc_now)
+    five = five_entry(10, 3600, utc_now)
+    line = budget_of(advice(
+        utc_now, [five, seven],
+        access=(utc_now + timedelta(days=1), "trial ends ~Aug 27"),
+        forecast=rested(),
+    ))
+    assert "~5 windows left · ~3 awake · 23.3%/window stays even" in line
+    assert "trial ends ~Aug 27" in line
 
 
 # --- boundaries ----------------------------------------------------------

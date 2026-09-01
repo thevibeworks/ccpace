@@ -127,9 +127,20 @@ writer can rotate without eating the other's history. Readers read
   is already in the usage payload). Not fetched at all when the usage
   payload says `extra_usage.credits_ever_enabled: false`.
 - forecast.cache: `{schema, computed_at, days_history, recent_24h,
-  recent_48h, weekday_profile:{"0".."6"}, ...}` — statusline's shape,
-  and statusline computes a SUPERSET off the same log (`pct_per_window`,
-  `scoped_*`, `cost`). Rebuild at most hourly. Unknown weekday = -1.
+  recent_48h, weekday_profile:{"0".."6"}, hour_profile:{"0".."23"}, ...}`
+  — statusline's shape, and statusline computes a SUPERSET off the same
+  log (`pct_per_window`, `scoped_*`, `cost`). Rebuild at most hourly.
+  Unknown weekday = -1.
+
+  `weekday_profile` is %/day; `hour_profile` is 24 dimensionless
+  MULTIPLIERS on it by local hour, mean 1.0, so a whole day still burns
+  its weekday total and only the shape inside the day changes. Floored at
+  0.1 and rounded at BUILD time by whichever writer built it — both
+  writers implement the same arithmetic, and a reader that re-rounded
+  would be a third opinion. Omitted when nothing was learned; a reader
+  takes flat (all 1.0) for absent, short, out-of-range or off-mean, and
+  never goes silent over it. `REST_MULT_MAX = 0.25` marks a rest hour.
+  Full contract: docs/statusline-interop.md.
 
   This is the one derived cache more than one tool wants to write, so
   `schema` versions the MODEL (2 = envelope burn) and the rule cuts both

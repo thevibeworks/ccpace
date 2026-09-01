@@ -54,8 +54,8 @@ which comes from clocks. They sit within one cell of each other.
 
 ```
  !  7d dry ~Wed 14:20, 19h before reset; then hard stop until reset
-    budget: ~9 windows left · 6.2%/window stays even · lands ~91% on your pattern
-             runway              RATION                  PREDICTION
+    budget: ~9 windows left · ~6 awake · 9.3%/window stays even · lands ~91% on your pattern
+             runway            REST       RATION                   PREDICTION
 ```
 
 `!` is a wall: a date, and the gap before the reset. The budget line is
@@ -64,6 +64,14 @@ statement — the RATION is what to spend (that rate lands exactly on 100),
 the PREDICTION is where your own behaviour takes you. Tagged `on your
 pattern` when the learned weekday walk spoke, `at this pace` when it was
 linear, so the reader always knows which model answered.
+
+`~6 awake` is the runway with the nights taken out. Claude Code can work
+around the clock; you cannot, and a ration that divides the pool across
+windows you sleep through asks you to hit a number lower than the one you
+can actually spend. The clause appears only when the hour shape is learned
+and the two counts differ, and it names the RATION's denominator by sitting
+beside it — nine windows, six of them yours, 9.3% each. Nothing awake ahead
+is not a rate: the line states the count and stops.
 
 One model per block. A landing is capped at 100 — above that the fact is
 the DATE, and the `!` row is where it goes. Two lines describing one week
@@ -94,5 +102,5 @@ Ask only when the answer can have changed.
 
 ## Words
 
-Lowercase, terse: `heading`, `lands`, `stays even`, `windows left`.
+Lowercase, terse: `lands`, `stays even`, `windows left`, `awake`.
 Numbers first. One line per thought; `·` between clauses.

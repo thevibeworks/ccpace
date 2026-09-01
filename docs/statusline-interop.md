@@ -38,6 +38,41 @@ tools, doubled API fetches, and two dialects of the same record.
      rate, per-model profile and price join every time it ran — and
      published a profile from a burn model statusline had already
      abandoned, which statusline's own guard then had to refuse.
+   - `hour_profile` is part of that contract as of ccpace 0.4.0 /
+     statusline 0.36.0. It is 24 burn MULTIPLIERS by local hour,
+     `{"0": 0.10, ..., "23": 1.83}`, mean 1.0 — the instantaneous rate at
+     hour h is `weekday_rate * mult[h]`, so integrating a whole local day
+     reproduces the weekday total exactly. Both writers compute it and
+     both must compute it the same way, because either may rebuild the
+     cache first:
+
+       * credit each envelope delta to its local `(day, hour)`;
+       * exclude today, EWMA-weight the rest at the 14-day half-life
+         (the weekday constants, unchanged);
+       * `share[h] = w_burn[h] / total_w_burn`, published only when
+         `total_w_burn > 0` — no extra day gate, readers already gate on
+         `days_history >= 14`;
+       * `m[h] = max(share[h] * 24, 0.1)`, then scale so the mean is
+         exactly 1, then round to 2 decimals. Floor FIRST: it is the hedge
+         for the occasional overnight autonomous run, so a rest hour
+         projects a tenth of a uniform hour and never zero. Rounding
+         happens at build time so every reader sees one set of numbers.
+
+     Reading it: use it only when all 24 keys are present, every value is
+     numeric in [0, 24], and the mean is in [0.9, 1.1]. Absent or invalid
+     means flat — a multiplier of 1 everywhere, which is the behaviour
+     before the field existed. A bad hour shape never silences a forecast;
+     only the weekday guards do that.
+
+     `REST_MULT_MAX = 0.25` is the shared reading rule: an hour whose
+     multiplier is below it is a REST hour. Both surfaces count the
+     windows you are awake for over the same span (from the end of the
+     live 5h window to the end of the 7d window), ceil the waking seconds
+     into 5h windows, and clamp to `windows_ahead`. The number appears
+     beside the window count on both, and two surfaces that disagree about
+     how much of the week you are awake for is the same failure as
+     disagreeing about how much of it is left. `schema` stays 2: the
+     model of the existing fields did not change.
 
 2. Account scoping: statusline keys `accounts/<tag>` by
    `STATUSLINE_ACCOUNT`/`DEVA_AUTH_TAG` (`auth-file-<stem>`); ccpace

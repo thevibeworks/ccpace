@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,6 +59,19 @@ def utc_now():
     return datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture
+def utc_tz(monkeypatch):
+    """Pin the display zone to UTC.
+
+    `primary_tz()` reads DISPLAY_TZS, a module-level list built at import
+    from CCPACE_TZ. Anything that buckets by local hour or local day — the
+    envelope, the walk, the awake count — otherwise reads the machine's zone,
+    and a test that says 03:00 means 03:00 somewhere the runner is not.
+    """
+    monkeypatch.setattr(cc, "DISPLAY_TZS", [(timezone.utc, "UTC")])
+    return timezone.utc
+
+
 def sample(ts: float, util: float, *, uuid: str = "acct-A", seven_reset: float = 0.0,
            five_reset: float = 0.0) -> cc.Sample:
     return cc.Sample(ts, five_reset or ts + 3600, util, uuid, seven_reset)
@@ -103,6 +117,15 @@ def flat_profile(rate: float, *, days: int = 30, recent_24h: float = 0.0) -> dic
         "recent_48h": recent_24h * 2,
         "weekday_profile": {str(d): rate for d in range(7)},
     }
+
+
+def hour_shape(rest_hours: Iterable[int], *, floor: float = 0.1) -> dict[str, float]:
+    """A hand-built `hour_profile` with mean EXACTLY 1: `rest_hours` sit at
+    the floor, the waking hours share what is left. Eight rest hours give
+    1.45 each — the shape the walk is supposed to notice."""
+    rest = set(rest_hours)
+    waking = (24 - len(rest) * floor) / (24 - len(rest))
+    return {str(h): floor if h in rest else waking for h in range(24)}
 
 
 def write_cache(root: Path, payload: dict) -> Path:

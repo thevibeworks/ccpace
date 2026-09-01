@@ -9,12 +9,15 @@ week with 56% left.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
+import pytest
 from conftest import (
     cc,
     five_entry,
     flat_profile,
+    hour_shape,
     sample,
     seven_entry,
     write_cache,
@@ -34,7 +37,7 @@ def test_envelope_credits_the_rise_not_the_deltas(utc_now):
     """
     base = utc_now.timestamp() - 3600
     rows = [sample(base + i * 60, u) for i, u in enumerate([10, 30, 50, 4, 54])]
-    daily, r24, _ = cc.seven_day_envelope(rows, utc_now)
+    daily, r24, _, _ = cc.seven_day_envelope(rows, utc_now)
     assert sum(daily.values()) == 44
     assert r24 == 44
 
@@ -42,7 +45,7 @@ def test_envelope_credits_the_rise_not_the_deltas(utc_now):
 def test_envelope_first_sample_is_a_baseline(utc_now):
     """Seeing an account already at 40 is not watching it climb to 40."""
     base = utc_now.timestamp() - 3600
-    daily, _, _ = cc.seven_day_envelope(
+    daily, _, _, _ = cc.seven_day_envelope(
         [sample(base, 40), sample(base + 60, 45)], utc_now
     )
     assert sum(daily.values()) == 5
@@ -53,7 +56,7 @@ def test_envelope_confirmed_reset_rebaselines(utc_now):
     climb to 20. Credit the 18 after the reset, never the 90 again."""
     base = utc_now.timestamp() - 3600
     rows = [sample(base + i * 60, u) for i, u in enumerate([50, 90, 2, 3, 20])]
-    daily, _, _ = cc.seven_day_envelope(rows, utc_now)
+    daily, _, _, _ = cc.seven_day_envelope(rows, utc_now)
     # 40 up to 90, then 18 from the new baseline of 2
     assert sum(daily.values()) == 40 + 18
 
@@ -63,7 +66,7 @@ def test_envelope_shallow_dip_is_not_a_reset(utc_now):
     the envelope holds and the re-climb earns nothing."""
     base = utc_now.timestamp() - 3600
     rows = [sample(base + i * 60, u) for i, u in enumerate([50, 60, 55, 55, 60])]
-    daily, _, _ = cc.seven_day_envelope(rows, utc_now)
+    daily, _, _, _ = cc.seven_day_envelope(rows, utc_now)
     assert sum(daily.values()) == 10
 
 
@@ -83,7 +86,7 @@ def test_envelope_drops_a_stale_session_reporting_an_old_window(utc_now):
         sample(base + 180, 62, seven_reset=old_key),
         sample(base + 240, 75, seven_reset=new_key),
     ]
-    daily, _, _ = cc.seven_day_envelope(rows, utc_now)
+    daily, _, _, _ = cc.seven_day_envelope(rows, utc_now)
     assert sum(daily.values()) == 65  # 10 -> 75 in the live window, nothing else
 
 
@@ -96,7 +99,7 @@ def test_envelope_newer_window_key_rebaselines_immediately(utc_now):
         sample(base + 120, 3, seven_reset=99999),   # new window, new baseline
         sample(base + 180, 9, seven_reset=99999),
     ]
-    daily, _, _ = cc.seven_day_envelope(rows, utc_now)
+    daily, _, _, _ = cc.seven_day_envelope(rows, utc_now)
     assert sum(daily.values()) == 85 + 6
 
 
@@ -132,6 +135,87 @@ def test_weekday_profile_excludes_today(utc_now):
     # and it must publish NOTHING rather than an all -1 profile: this cache is
     # shared, and an empty one stamped `now` silences every surface reading it
     assert cc.weekday_burn_forecast(rows, "acct-A", utc_now) is None
+
+
+# --- the shape of a day --------------------------------------------------
+
+def _shaped_days(now, hours, *, days: int = 21, per_hour: float = 2.0,
+                 uuid: str = "acct-A") -> list:
+    """A counter that climbs `per_hour` in each local hour of `hours`, every
+    day for `days` days back, resetting at each 7d window boundary. `hours`
+    may be a callable of days-back, for a rhythm that moved. Nothing lands on
+    today — the builder would refuse to train on it anyway."""
+    hours_on = hours if callable(hours) else (lambda back: hours)
+    rows, week, util = [], None, 0.0
+    midnight = now.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    for back in range(days, 0, -1):
+        day = midnight - timedelta(days=back)
+        key = int(day.timestamp() // (7 * DAY)) * (7 * DAY)
+        if key != week:
+            week, util = key, 0.0
+            rows.append(sample(day.timestamp(), 0.0, uuid=uuid, seven_reset=key))
+        for hour in hours_on(back):
+            util += per_hour
+            rows.append(sample(
+                day.timestamp() + hour * 3600 + 1800, util, uuid=uuid, seven_reset=key
+            ))
+    return rows
+
+
+def test_hour_profile_is_a_share_of_the_day_floored_and_renormalized(utc_tz, utc_now):
+    """Nine working hours carry the whole day's burn.
+
+    Each is 1/9 of it, so 24/9 = 2.67 before the floor lifts the fifteen
+    idle hours off zero; that lift is paid for by scaling the whole shape
+    back to mean 1. The ORDER is the point: floored after renormalizing, a
+    rest hour would read exactly 0.10.
+    """
+    rows = _shaped_days(utc_now, range(9, 18))
+    got = cc.weekday_burn_forecast(rows, "acct-A", utc_now)
+    shape = got["hour_profile"]
+    assert sorted(shape) == sorted(str(h) for h in range(24))
+    assert shape["12"] == 2.51                      # (24/9) * 24/25.5
+    assert shape["3"] == 0.09                       # the floor, scaled
+    assert 0.9 <= sum(shape.values()) / 24 <= 1.1
+    assert cc.hour_multipliers(got) is not None
+
+
+def test_hour_profile_never_trains_on_today(utc_tz, utc_now):
+    """Today is partial for the hours exactly as it is for the day: a 03:00
+    burst this morning is not evidence that this account works nights."""
+    rows = _shaped_days(utc_now, range(9, 18))
+    quiet = cc.weekday_burn_forecast(rows, "acct-A", utc_now)["hour_profile"]
+
+    last = rows[-1]
+    today = utc_now.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    rows.append(sample(today.timestamp() + 3 * 3600, last.util + 40,
+                       seven_reset=last.seven_reset))
+    assert cc.weekday_burn_forecast(rows, "acct-A", utc_now)["hour_profile"] == quiet
+
+
+def test_hour_profile_lets_an_old_rhythm_fade(utc_tz, utc_now):
+    """Same 14-day half-life the weekdays use: a schedule you moved off three
+    weeks ago must not still be shaping tonight's forecast."""
+    rows = _shaped_days(utc_now, lambda back: [9] if back > 14 else [21])
+    shape = cc.weekday_burn_forecast(rows, "acct-A", utc_now)["hour_profile"]
+    assert shape["21"] > shape["9"] > cc.REST_MULT_MAX
+
+
+def test_hour_profile_is_read_only_when_it_is_the_shape_it_claims(utc_tz):
+    """A co-writer's dialect, a truncated write, a value off the scale: the
+    reader takes flat over any of them, and never goes silent over one."""
+    good = hour_shape(range(8))
+    assert cc.hour_multipliers({"hour_profile": good})[0] == 0.1
+    assert cc.hour_multipliers(None) is None
+    assert cc.hour_multipliers({}) is None
+    assert cc.hour_multipliers({"hour_profile": {"0": 1.0}}) is None       # 23 short
+    assert cc.hour_multipliers({"hour_profile": {str(h): 3.0 for h in range(24)}}) is None
+    assert cc.hour_multipliers({"hour_profile": dict(good, **{"5": 30})}) is None
+    assert cc.hour_multipliers({"hour_profile": dict(good, **{"5": "x"})}) is None
 
 
 # --- the walk ------------------------------------------------------------
@@ -185,6 +269,76 @@ def test_walk_is_silent_on_a_cold_start(utc_now):
     assert cc.project_week(None, entry, utc_now) is None
 
 
+def test_walk_without_an_hour_shape_is_the_day_walk(utc_tz, utc_now):
+    """The regression the shaped walk owes the old one. Stepping by local hour
+    instead of by local day may not move a single number when there is no
+    shape to apply: two days at 10%/day is 20 points, and a pool with 56 left
+    at 60%/day dries 22h24m out, hour walk or day walk."""
+    entry = seven_entry(44, 2 * DAY, utc_now)
+    assert cc.project_week(flat_profile(10), entry, utc_now)[0] == pytest.approx(64)
+
+    landing, dry = cc.project_week(flat_profile(60), entry, utc_now)
+    assert landing == 100
+    assert abs((dry - (utc_now + timedelta(hours=22.4))).total_seconds()) < 1
+
+
+def test_a_corrupt_hour_shape_is_flat_and_never_silence(utc_tz, utc_now):
+    """The weekday guards decide whether a forecast exists; a bad hour shape
+    only decides whether it knows when you sleep."""
+    entry = seven_entry(44, 2 * DAY, utc_now)
+    plain = cc.project_week(flat_profile(60), entry, utc_now)
+    for broken in ({"0": 1.0}, {str(h): 3.0 for h in range(24)},
+                   dict(hour_shape(range(8)), **{"5": 30})):
+        bad = flat_profile(60)
+        bad["hour_profile"] = broken
+        assert cc.project_week(bad, entry, utc_now) == plain
+
+
+def test_the_shape_moves_the_burn_without_moving_the_day(utc_tz, utc_now):
+    """The multipliers have mean 1, so a whole day burns the weekday total
+    whatever shape it has. What moves is WHEN inside the day."""
+    entry = seven_entry(20, 2 * DAY, utc_now)
+    shaped = flat_profile(10)
+    shaped["hour_profile"] = hour_shape(range(8))
+    assert cc.project_week(shaped, entry, utc_now)[0] == pytest.approx(
+        cc.project_week(flat_profile(10), entry, utc_now)[0]
+    )
+
+
+def test_the_shape_moves_a_dry_out_of_the_night(utc_tz, utc_now):
+    """The early-warning fix, and the whole point of the model.
+
+    11pm, 10 points left, 60%/day: the flat walk puts the wall at 03:00 —
+    a false alarm to the reader still awake and a missed warning to the one
+    who reads it at breakfast. The account does not burn between midnight
+    and 08:00, so the wall is really the next morning.
+    """
+    late = utc_now.replace(hour=23)
+    entry = seven_entry(90, 2 * DAY, late)
+    flat_dry = cc.project_week(flat_profile(60), entry, late)[1]
+    assert flat_dry.astimezone(utc_tz).hour == 3
+
+    shaped = flat_profile(60)
+    shaped["hour_profile"] = hour_shape(range(8))
+    dry = cc.project_week(shaped, entry, late)[1].astimezone(utc_tz)
+    assert dry.hour >= 8 and dry.date() == flat_dry.astimezone(utc_tz).date()
+
+
+def test_a_day_the_clock_shortens_burns_a_shorter_day(monkeypatch, utc_now):
+    """A spring-forward day is 23 hours long and burns 23 hours of quota.
+
+    The day walk sized its segments by subtracting two datetimes that shared
+    one tzinfo, and Python does that on the WALL clock — so the hour the
+    clock skipped was credited anyway, twice a year, in every zone that
+    moves. Hour segments are measured in absolute seconds off the local
+    clock's own minute, so the day is the length it actually is.
+    """
+    monkeypatch.setattr(cc, "DISPLAY_TZS", [(ZoneInfo("America/New_York"), "NY")])
+    start = datetime(2026, 3, 8, 5, 0, tzinfo=timezone.utc)       # 00:00 EST
+    entry = seven_entry(10, 23 * 3600, start)                     # to 00:00 EDT
+    assert cc.project_week(flat_profile(24), entry, start)[0] == pytest.approx(33)
+
+
 def test_walk_stops_at_the_access_boundary(utc_now):
     """Windows you cannot spend are not budget: one horizon per block."""
     entry = seven_entry(20, 4 * DAY, utc_now)
@@ -226,6 +380,23 @@ def test_windows_ahead_is_zero_in_the_last_window(utc_now):
     seven = seven_entry(80, 3 * 3600, utc_now)
     five = five_entry(20, 3.5 * 3600, utc_now)
     assert cc.windows_ahead(seven, five) == 0
+
+
+def test_awake_windows_counts_only_the_hours_you_are_up(utc_tz, utc_now):
+    """Wed 12:00 to Fri 09:00 with the nights out: 12 + 16 + 1 = 29 waking
+    hours, which is five windows and change, and change still buys work."""
+    mult = [v for _, v in sorted(
+        hour_shape(range(8)).items(), key=lambda kv: int(kv[0])
+    )]
+    assert cc.awake_windows(mult, utc_now, 3 * 3600, 48 * 3600) == 6
+    # no live 5h window: the span starts now, and 3 more waking hours fit
+    assert cc.awake_windows(mult, utc_now, 0, 48 * 3600) == 7
+    # a 5h window outlasting the week leaves no span at all
+    assert cc.awake_windows(mult, utc_now, 48 * 3600, 3 * 3600) == 0
+    # a span that lies entirely in the night is not runway
+    assert cc.awake_windows(mult, utc_now, 16 * 3600, 22 * 3600) == 0
+    # and a 24/7 account is awake for every window in the span
+    assert cc.awake_windows([1.0] * 24, utc_now, 3 * 3600, 48 * 3600) == 9
 
 
 # --- the shared cache ----------------------------------------------------
@@ -313,6 +484,25 @@ def test_read_accepts_only_a_fresh_cache_of_our_own_schema(store, utc_now):
 
     (store / "forecast.cache").write_text("{not json")
     assert cc.read_forecast_cache("") is None
+
+
+def test_the_hour_shape_survives_the_shared_cache(store, utc_tz, utc_now):
+    """The field is only useful if it comes back out the way it went in:
+    JSON keys are strings, and a reader that re-derives or re-rounds it is a
+    third opinion about one week. Round-trip, and read what the co-writer
+    reader reads."""
+    write_cache(store, {"schema": cc.FORECAST_SCHEMA, "computed_at": 0,
+                        "pct_per_window": 11.4})     # a key we do not compute
+    built = cc.weekday_burn_forecast(
+        _shaped_days(utc_now, range(9, 18)), "acct-A", utc_now
+    )
+    built["computed_at"] = int(cc.datetime.now(cc.timezone.utc).timestamp())
+    cc.write_forecast_cache("", built)
+
+    back = cc.read_forecast_cache("")
+    assert back["pct_per_window"] == 11.4
+    assert back["hour_profile"] == built["hour_profile"]
+    assert cc.hour_multipliers(back)[12] == 2.51
 
 
 def test_history_drops_uuidless_rows_and_counts_them(store, utc_now):

@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.4.0 — the hours you keep (2026-09-01)
+
+Claude Code can work 24/7. You cannot, and the forecast did not know the
+difference: it learned a WEEKDAY profile and then burned it flat through
+the night. So a week that really ran out on Thursday morning printed
+
+```
+7d dry ~Thu 03:00, 30h before reset; then hard stop until reset
+budget: ~9 windows left · 6.2%/window stays even
+```
+
+A wall placed mid-sleep is a false alarm at 11pm and a missed warning at
+09:00, and a ration divided across windows you sleep through asks you to
+hit a number lower than the one you can actually spend. Both are the same
+missing fact. The corpus already held it: burn credited by the envelope
+pass carries a timestamp, and hours that never burn across weeks are the
+hours you rest.
+
+### `hour_profile`: the shape of your day, in the shared cache
+
+24 multipliers by local hour, mean 1.0, so the rate at hour h is
+`weekday_rate * mult[h]` and a whole day still burns its weekday total —
+only the shape inside the day changes. Built on the same pass and the same
+constants as the weekdays: each envelope delta is credited to its local
+`(day, hour)`, today is excluded (partial, never a training day), the rest
+are EWMA-weighted at the 14-day half-life, and each hour's share of the
+week becomes its multiplier.
+
+Floored at 0.1 and renormalized to a mean of exactly 1, in that order, at
+BUILD time. The floor is the hedge for the occasional overnight autonomous
+run — a rest hour projects a tenth of a uniform hour, never zero — and the
+order matters, since flooring after the normalization would publish a
+shape whose mean is no longer 1. Build-time rounding matters because the
+cache is SHARED: statusline computes the identical field off the same log,
+and two writers rounding their own way is two answers to one week.
+`schema` stays 2 — the model of the existing fields did not change, and a
+reader that has never heard of the field keeps working. Contract in
+`docs/statusline-interop.md` and `docs/data.md`.
+
+Read defensively and never fatally: all 24 keys, every value numeric in
+[0, 24], mean in [0.9, 1.1], or the walk takes flat and carries on. A bad
+hour shape decides only whether the forecast knows when you sleep; the
+weekday guards still decide whether it speaks at all.
+
+### The walk steps by the hour
+
+`project_week` now walks local hour boundaries instead of local days — at
+most 169 segments for a week — and multiplies each segment's weekday rate
+by that hour's shape. With no learned shape every multiplier is 1 and the
+numbers are the day walk's to thirteen decimal places, which the suite
+asserts. The dry warnings needed no copy change: the shaped walk moves the
+dry TIME out of the night by itself, and that is the early-warning fix.
+
+Two behaviours moved, both deliberately:
+
+- The 24h blend (`max(weekday, recent_24h)` over the first day) is tested
+  at the start of each segment, and a segment used to be a calendar day —
+  so a blend that began 15h out ran to 39h. It now ends at 24h.
+- A spring-forward day is 23 hours long and now burns 23 hours of quota.
+  The day walk sized its segments by subtracting two datetimes that shared
+  one tzinfo, which Python does on the WALL clock, so the skipped hour was
+  credited anyway — twice a year, in every zone that moves. Segments are
+  measured in absolute seconds off the local clock's own minute.
+
+### `~6 awake`: the ration you can actually spend
+
+```
+budget: ~9 windows left · ~6 awake · 9.3%/window stays even · lands ~52% on your pattern
+```
+
+An hour whose multiplier is under `REST_MULT_MAX` (0.25, a shared
+constant) is rest. Count the waking seconds between the end of the window
+you are in and the end of the week, ceil them into 5h windows the same way
+`windows_ahead` ceils — a partial window is still spendable — and clamp to
+the window count itself. The clause appears only when the shape is learned
+on at least two weeks of history and the two counts differ, and it names
+the ration's denominator by sitting beside it. Nothing awake ahead is not
+a rate: the line states the count and stops rather than divide by zero or
+quote a number nobody can spend. When paid access ends before the reset,
+the awake count is measured over the truncated span too — one horizon per
+block, as the runway, the ledger's `┤` and the landing already were.
+
+`windows_ahead` itself is untouched. The countdown invariant stays; the
+budget line owns the refinement.
+
 ## v0.3.1 (2026-08-27)
 
 Two readers, one rule. `load_account_history` partitioned by uuid and
