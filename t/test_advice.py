@@ -491,11 +491,18 @@ def test_an_unlearned_row_is_the_row_it_always_was(utc_tz, utc_now, tty):
             ) == was
 
 
-def test_a_slot_the_pool_cannot_reach_stays_red(utc_tz, utc_now, tty):
-    """× beats rest. A window the 7d pool will not cover is unreachable for
-    a stronger reason than sleep, and two of these would have been nights."""
-    entry = week_grid(utc_now, cap_eta=utc_now + timedelta(hours=15))
-    cells = ahead(cc.format_window_ledger(entry, {}, None, utc_now, forecast=rested()))
-    assert [g for g, _ in cells] == list("▯▯×××××××")
-    assert all(tint == cc.RED for g, tint in cells if g == "×")
-    assert not any(tint == cc.DIM for _, tint in cells)
+def test_a_dry_guess_may_not_delete_a_window(utc_tz, utc_now, tty):
+    """A future cell is a slot, never a verdict. The dry projection used to
+    overwrite ahead-cells as red × and was read, live, as deleted windows
+    (statusline v0.39.0, same day); the wall's owner is the `7d dry` advice
+    row under this ledger. With and without a cap_eta, the drawn cells are
+    identical — hollow to the edge, dim where the night falls."""
+    dry = week_grid(utc_now, cap_eta=utc_now + timedelta(hours=15))
+    calm = week_grid(utc_now)
+    with_dry = cc.format_window_ledger(dry, {}, None, utc_now, forecast=rested())
+    without = cc.format_window_ledger(calm, {}, None, utc_now, forecast=rested())
+    assert with_dry == without
+    assert "×" not in with_dry
+    cells = ahead(with_dry)
+    assert all(g == "▯" for g, _ in cells)
+    assert any(tint == cc.DIM for _, tint in cells)

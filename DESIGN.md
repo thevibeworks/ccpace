@@ -38,7 +38,6 @@ never a countdown that rots.
 ▮          now
 ▯          ahead — the hollow of ▮
 ▯ dim      ahead, but you sleep through most of it
-×          pace won't cover it
 ┤          access ends here (trial / period end)
 ```
 
@@ -60,8 +59,14 @@ instead of a count. A slot is a night when under half of it (9000 s) falls
 in hours you are awake for — the slot's whole wall span, not the hour it
 opens in, because 20:00–01:00 and 05:00–10:00 straddle the same night and
 only one of them is a window you can spend. Gated on the same evidence the
-walk needs; unlearned, the row is byte-for-byte what it was. `×` wins over
-rest — unreachable beats unlikely — and ▮ and the record are untouched.
+walk needs; unlearned, the row is byte-for-byte what it was. ▮ and the
+record are untouched — and no cell ahead is ever a verdict. The ledger
+used to overwrite dry-projected cells as red `×`; drawn out, a run of
+them read as *deleted windows* (measured live, 2026-09-01, on
+statusline's unfolded row — its v0.39.0 and this release retire the cell
+together). The wall's owner is the `7d dry ~...` advice row directly
+under this ledger, which states the exact time with its own gates. A
+guess may not delete a window.
 
 ## Advice
 

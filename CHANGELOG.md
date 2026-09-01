@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.0 — a guess may not delete a window (2026-09-01)
+
+**The `×` cell is retired.** The ledger used to overwrite dry-projected
+ahead-cells as red `×`, and drawn out in a run they read as *deleted
+windows* — measured live the day statusline's unfold exposed the same
+run on its row (`▮▯▯▯×××`: six windows to the reset, counted as three
+by the person the row exists for). A future cell is a slot, never a
+verdict. The wall already has an owner with better gates and an exact
+time: the `7d dry ~...` advice row directly under this ledger. Every
+cell ahead now draws hollow — dim where your learned hours say you
+sleep — to the grid's edge.
+
+Ships with statusline v0.39.0 ("a guess may not delete a window"),
+which retires its future `×` cells the same way and keeps the mark only
+in its folded token, where no per-cell shape exists to say it. No
+`forecast.cache` change of any kind.
+
 ## v0.6.0 — the night on the ledger (2026-09-01)
 
 v0.4.0 taught the forecast that you sleep. The ledger still did not know:

@@ -50,7 +50,8 @@ sorted by tier.
   `▂▃▄▅▆▇█` what a slot burned (from your sample history), `▁` the
   baseline (ran, cost under a point — the shortest bar of the same block,
   so the zero line and the bars share one font), `░` unknown, `▮` now,
-  `▯` ahead, `×` won't be covered at current pace, `┤` access ends there.
+  `▯` ahead, `┤` access ends there (a dry projection never overwrites a
+  cell — the `7d dry` advice row states the wall with its exact time).
   An ahead-cell you'll sleep through most of draws dim once your hours are
   learned — same glyph, tint stepped back, so the week ahead reads as a
   shape and not a count. The cells are a grid anchored to the period start,

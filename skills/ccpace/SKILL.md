@@ -20,8 +20,10 @@ Reading the output:
   `▒` time ahead of usage (headroom), `░` untouched.
 - The ledger strip under the 7d row: one cell per 5h slot of the period;
   `▂`..`█` what a slot burned, `▁` the baseline (ran, cost nothing),
-  `░` unknown, `▮` = now, `▯` = a slot ahead, `×` = a slot the pool will
-  not cover, `┤` = access ends there. It is a grid on the period start,
+  `░` unknown, `▮` = now, `▯` = a slot ahead (dim: one the user likely
+  sleeps through), `┤` = access ends there. A dry projection never
+  overwrites a cell — the `7d dry` advice row states the wall. It is a
+  grid on the period start,
   so read it for SHAPE — the budget line's count comes from the clocks
   and is the number to quote.
 - `!` lines are walls: a pace or learned-forecast projection of when the

@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.6.0
+# Version: 0.7.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -37,7 +37,6 @@ per 5h window of the period (34 cells), left to right in time —
   ▮         the window you are in now
   ▯         a window still ahead of you (the hollow of ▮: an empty slot),
             drawn dim when your learned hours say you sleep through it
-  ×         a window the 7d pool will not cover at the current pace
   ┤         access ends here (trial end, or the derived sub period end
             assumed binding — the API states no renewal/cancel date)
 what follows ▮ is the advisor's "windows left" — ▮ itself is where you
@@ -78,7 +77,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -1734,7 +1733,6 @@ def format_window_ledger(
       ▮         the window you are in now
       ▯         a window still ahead of you (the hollow of ▮: an empty slot)
       ▯ dim     ahead, but you will sleep through most of it
-      ×         a window the 7d pool will not cover at the current pace
       ┤         access ends here — the strip stops, those windows are not yours
     Unknown and idle are deliberately different glyphs: drawing a gap in
     the record as an idle session is the one lie this surface must not
@@ -1746,9 +1744,9 @@ def format_window_ledger(
     it says only how likely that capacity is to be reachable. The future
     stops being one number and becomes a SHAPE. Gated on the same evidence
     the walk needs (a valid hour_profile and FORECAST_MIN_DAYS of history);
-    unlearned, the row is byte-for-byte what it was. × wins over rest: a
-    slot the pool cannot cover is unusable for a stronger reason, and ▮ and
-    every history cell are untouched.
+    unlearned, the row is byte-for-byte what it was. ▮ and every history
+    cell are untouched — and no cell ahead is ever a verdict: the dry
+    projection stays in the advice row, which states the exact time.
 
     The cells are a GRID anchored to the period start, not a row of your
     real 5h windows — those are anchored to the 5h reset, which is only in
@@ -1768,10 +1766,6 @@ def format_window_ledger(
         mult = hour_multipliers(forecast)
     now_ts = now.timestamp()
     now_slot = int((now_ts - period_start) // WINDOW_5H_SEC)
-    dry_slot = None
-    cap_eta = entry.get("cap_eta")
-    if cap_eta is not None and cap_eta < entry["reset_dt"]:
-        dry_slot = int((cap_eta.timestamp() - period_start) // WINDOW_5H_SEC)
     end_slot = None
     if access_end is not None and access_end < entry["reset_dt"]:
         # first fully-unusable slot; the slot containing the end is still
@@ -1808,9 +1802,14 @@ def format_window_ledger(
                 cells.append(("░", "unknown"))
         elif i == now_slot:
             cells.append(("▮", "now"))
-        elif dry_slot is not None and i >= dry_slot:
-            cells.append(("×", "dry"))
         else:
+            # A future cell is a slot, never a verdict. A dry projection
+            # used to overwrite these as red × — and read, live, as
+            # DELETED windows (statusline v0.39.0, same day the unfold
+            # exposed the run). The wall already has an owner with better
+            # gates and an exact time: the `7d dry ~...` advice row under
+            # this ledger. Cells carry the shape; the sentence does the
+            # warning.
             slot_start = period_start + i * WINDOW_5H_SEC
             rest = mult is not None and slot_is_rest(
                 mult,
@@ -1829,7 +1828,6 @@ def format_window_ledger(
         "now": BOLD,
         "future": "",
         "rest": DIM,
-        "dry": RED,
         "end": YELLOW,
         "gap": "",
     }
@@ -2799,7 +2797,7 @@ def format_usage_display(
         5h     22% ██░░░░░░░░  4h 11m   @20:59        +3%  1.4x
         7d     80% ████████▓░  3d 20h   @Thu 23 23:59       1.8x
         fable  97% █████████▓  3d 20h   @Wed 22 23:59       2.2x
-                   ▂▃▅▁▂▄█▃▁▁▂▅▄▃▁▂▃▅▄▂▁▃▄▅▃▂▮▯▯××××
+                   ▂▃▅▁▂▄█▃▁▁▂▅▄▃▁▂▃▅▄▂▁▃▄▅▃▂▮▯▯▯▯▯▯
          !  7d dry ~Thu 23 09:00, 2d 15h before reset; then extra usage billing
                    budget: ~18 windows left · 1.1%/window stays even
     """

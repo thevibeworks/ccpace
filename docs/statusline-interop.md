@@ -80,7 +80,10 @@ tools, doubled API fetches, and two dialects of the same record.
      waking seconds by the rule above, measured across the slot's whole
      wall span rather than the hour it opens in. Both tools draw such a
      slot as the same hollow ▯ in a dim tint; neither invents a glyph, and
-     `×` (the pool will not reach it) wins over rest on both. Unlearned by
+     neither lets a dry projection overwrite a cell (v0.7.0 / statusline
+     v0.39.0: a future cell is a slot, never a verdict — the wall belongs
+     to the advice/notice sentence; statusline's folded token alone still
+     carries the `×` mark). Unlearned by
      the read validation above, or short of `days_history >= 14`, and the
      rows draw exactly as they did before the rule existed. The dim cells
      and the `~N awake` count may differ by one: the grid is anchored to
