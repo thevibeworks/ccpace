@@ -106,6 +106,21 @@ def five_entry(util: int, remaining: float, now: datetime) -> dict:
     }
 
 
+def scoped_entry(
+    name: str, util: int, remaining: float, now: datetime, *, active: bool = False
+) -> dict:
+    """A model-scoped weekly cap, as analyze_windows would hand it over.
+
+    Same length and (by default) the same wall as the 7d — that shared reset
+    is what makes the two utilizations a ratio — with its own name, depth and
+    is_active flag.
+    """
+    entry = seven_entry(util, remaining, now)
+    entry["name"] = name
+    entry["active"] = active
+    return entry
+
+
 def flat_profile(rate: float, *, days: int = 30, recent_24h: float = 0.0) -> dict:
     """A profile that burns the same every weekday — the walk is then pure
     arithmetic and a test can state the expected landing exactly."""

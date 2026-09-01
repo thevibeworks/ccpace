@@ -74,6 +74,34 @@ tools, doubled API fetches, and two dialects of the same record.
      disagreeing about how much of it is left. `schema` stays 2: the
      model of the existing fields did not change.
 
+   - Not every shared rule is a field. The SCOPED STRAND reading (ccpace
+     0.5.0 / statusline 0.37.0) is computed live off the usage payload and
+     touches `forecast.cache` not at all. The account's 7d pool and a
+     model-scoped weekly pool count from the SAME reset instant, so the
+     live ratio between them IS this week's mix rate — scoped points per
+     7d point — and the closed forms need no history:
+
+       mix       = scope / seven
+       reachable = round((100 - seven) * scope / seven)
+       strand    = round(100 * (seven - scope) / seven)
+                 = (100 - scope) - reachable
+
+     Live check: seven 81, scope 63 -> mix 0.78, reachable 15, strand 22;
+     corpus mining of the same week put dF/dS at 0.77, so the ratio is the
+     estimator rather than a stand-in for one. Both tools gate it on the
+     same reading rules, and the gates ARE the contract: same wall
+     (`|scope reset - 7d reset| <= 120 s` — Anthropic could split them
+     someday), `SCOPE_MIX_MIN_7D = 60`, `SCOPE_MIX_MIN_SCOPE = 5`, neither
+     pool at 100, `SCOPE_STRAND_MIN_PCT = 10`, and a 7d window past the
+     young guard. statusline mutes it additionally while a rebase is
+     newsworthy and while its own scoped walk already projects the scoped
+     cap arriving first — "caps first" and "strands" cannot both be true in
+     one frame. ccpace has neither mechanism and does not invent one.
+
+     The pure-scope coupling — what a scoped point costs the account when
+     only that model runs — is deliberately NOT published on either side:
+     n=22 and a band wide enough to be fluent and wrong.
+
 2. Account scoping: statusline keys `accounts/<tag>` by
    `STATUSLINE_ACCOUNT`/`DEVA_AUTH_TAG` (`auth-file-<stem>`); ccpace
    keys by the credential filename stem. The stem is the shared key —

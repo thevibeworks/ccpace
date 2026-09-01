@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.5.0 — two pools, one wall (2026-09-01)
+
+An account at 81% of its week with a model-scoped pool at 63% has two
+counters heading for the same wall at different speeds, and nothing on the
+block said which cap binds or what it costs:
+
+```
+7d     81% ████████▓░  2d 3h   @Wed 19 09:00       1.2x
+fable  63% ██████▒▒▒░  2d 3h   @Wed 19 09:00       0.9x
+```
+
+The 7d cap ends the week for every model, so those 37 fable points are not
+37 points of headroom — at this week's mix, 22 of them expire untouched.
+
+### The ratio is the estimator
+
+Both counters start at the same reset instant, which makes the live ratio
+between them this week's MIX RATE — scoped points per 7d point — with no
+history behind it at all:
+
+```
+mix       = scope / seven
+reachable = round((100 - seven) * scope / seven)
+strand    = round(100 * (seven - scope) / seven)   == (100 - scope) - reachable
+```
+
+81/63 gives mix 0.78, reachable 15, strand 22. Mining the corpus for the
+same week's dF/dS put it at 0.77, so this is not an approximation of the
+measurement, it is the measurement — available in the payload already on
+screen. No new `forecast.cache` field, no schema question, nothing to
+learn and nothing to wait two weeks for.
+
+What is NOT published: the pure-scope coupling, what a scoped point costs
+the account when only that model runs. n=22, and the band is wide enough
+to be fluent and wrong.
+
+### One row, above the budget
+
+```
+fable: ~15% of its 37% left reachable at this mix · heavier fable extracts more
+budget: ~9 windows left · ~6 awake · 9.3%/window stays even · lands ~91% on your pattern
+```
+
+An info row immediately before the budget line, because it qualifies the
+very headroom the budget then rations. It states the reachable half rather
+than the strand: 22 wasted points is not something a reader can act on,
+and running that model heavier is. Where the payload names no running
+model the deepest scoped pool answers, unless one declares itself active —
+depth is a guess at which pool the reader cares about, `is_active` is the
+account saying it outright.
+
+Gated so the ratio stays honest, and statusline v0.37.0 gates its own
+notice on the same five: one wall (both resets within 120 s — Anthropic
+could split them someday), `SCOPE_MIX_MIN_7D = 60` (which cap binds is a
+question only near the end), `SCOPE_MIX_MIN_SCOPE = 5` (an untouched model
+is the underuse question, not a mix), neither pool capped (that is its own
+notice), `SCOPE_STRAND_MIN_PCT = 10` (under that it is rounding wearing
+advice), and the existing young-week guard. The constants are shared
+READING RULES, documented in `docs/statusline-interop.md`; statusline adds
+two mutes ccpace has no mechanism for and did not invent.
+
 ## v0.4.0 — the hours you keep (2026-09-01)
 
 Claude Code can work 24/7. You cannot, and the forecast did not know the

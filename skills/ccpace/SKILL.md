@@ -34,6 +34,10 @@ Reading the output:
 - `~N awake` between the two is the runway with the hours this account
   rests taken out, and it is the RATION's denominator when present. Quote
   both counts. No ration at all means nothing ahead is awake.
+- A row directly above the budget (`fable: ~15% of its 37% left reachable
+  at this mix`) means the account's 7d cap will end the week before that
+  model's own pool empties. The number is what the CURRENT mix reaches;
+  the rest of the pool expires unless that model runs heavier.
 
 Answer with the numbers, not the raw dump: utilization, time to reset,
 windows left, where it lands and by which model, and whether a wall

@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.4.0
+# Version: 0.5.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -77,7 +77,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -149,6 +149,19 @@ REST_MULT_MAX = 0.25
 # describes the windows BEFORE it, and the recent-24h blend describes a day
 # that sits on the far side of the reset.
 SEVEN_DAY_YOUNG_SEC = 86400
+# The scoped strand reading (see scoped_strand): the account pool and a
+# model-scoped pool drain at different speeds toward the SAME wall, so the
+# live ratio between them is this week's mix rate and needs no history at
+# all. These are the bounds that keep that ratio honest, and statusline
+# gates its own notice on the same ones — a shared READING RULE, with
+# nothing behind it in the cache (docs/statusline-interop.md).
+SCOPE_STRAND_MIN_PCT = 10  # under this the strand is rounding, not a fact
+SCOPE_MIX_MIN_7D = 60  # which cap binds is a question only near the end
+SCOPE_MIX_MIN_SCOPE = 5  # a model untouched this week is a different notice
+# One wall, within a couple of minutes of clock skew. Anthropic could split
+# the two resets someday; this gate is what stops the ratio from being read
+# across two different weeks if they do.
+SCOPE_SAME_WALL_SEC = 120
 USAGE_LOG_MAX_BYTES = int(os.getenv("USAGE_LOG_MAX_BYTES", str(32 * 1024 * 1024)))
 
 WINDOW_5H_SEC = 5 * 3600
@@ -1952,6 +1965,59 @@ def awake_windows(
     return int((awake + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC)
 
 
+def scoped_strand(windows: list[dict], seven: dict) -> tuple[str, int, int] | None:
+    """What a 7d point buys in the model-scoped pool, and what strands.
+
+    Two pools, one wall: the account's 7d cap ends the week for every model,
+    so a model-scoped weekly cap draining slower than the account's never
+    empties. Live case: 7d at 81%, the scoped pool at 63% — that pool looks
+    like it has 37 points left, and 22 of them expire.
+
+    Both counters start at the same reset instant, so their ratio IS this
+    week's mix rate (scoped points per 7d point) and the reading needs no
+    history at all:
+
+        mix       = scope / seven
+        reachable = (100 - seven) * mix
+        strand    = 100 * (seven - scope) / seven   == (100 - scope) - reachable
+
+    Measured against corpus mining on the same week (dF/dS 0.77 vs a live
+    ratio of 0.78): the ratio is the estimator, not an approximation of one.
+    The pure-scope coupling — what a scoped point costs the account when you
+    run only that model — is NOT published: n=22 and the band is wide enough
+    to be fluent and wrong.
+
+    Returns (name, reachable, scope headroom) for the pool worth naming, or
+    None when the reading would not be honest: a wall further than
+    SCOPE_SAME_WALL_SEC from the 7d's (two walls, two weeks, no ratio), a 7d
+    window too young to have a mix yet, either pool capped (that is its own
+    notice), a 7d under SCOPE_MIX_MIN_7D (nothing binds yet), a scope under
+    SCOPE_MIX_MIN_SCOPE (an untouched model is the underuse question), or a
+    strand under SCOPE_STRAND_MIN_PCT (two pools that drain together).
+
+    Where no model is running, the deepest scoped pool answers — unless one
+    declares itself active, which is a better claim than depth.
+    """
+    scoped = [w for w in windows if w["length"] == WINDOW_7D_SEC and w["name"] != "7d"]
+    if not scoped:
+        return None
+    active = [w for w in scoped if w["active"]]
+    pick = max(active or scoped, key=lambda w: w["util"])
+
+    if seven["length"] - seven["remaining"] < SEVEN_DAY_YOUNG_SEC:
+        return None
+    if abs((pick["reset_dt"] - seven["reset_dt"]).total_seconds()) > SCOPE_SAME_WALL_SEC:
+        return None
+    scope, account = pick["util"], seven["util"]
+    if scope >= 100 or account >= 100:
+        return None
+    if account < SCOPE_MIX_MIN_7D or scope < SCOPE_MIX_MIN_SCOPE:
+        return None
+    if round(100 * (account - scope) / account) < SCOPE_STRAND_MIN_PCT:
+        return None
+    return pick["name"], round((100 - account) * scope / account), 100 - scope
+
+
 def build_advice(
     data: dict,
     windows: list[dict],
@@ -2047,6 +2113,22 @@ def build_advice(
     # budget line: one frame, left to right — runway, the ration, the
     # landing; degrades when the week is nearly over
     if seven:
+        # First, what the budget's headroom is worth in the OTHER pool. The
+        # 7d cap ends the week for every model, so a scoped pool draining
+        # slower than the account's has points on it that no amount of this
+        # week's mix will reach. It sits above the budget line because it
+        # qualifies the very headroom the budget then rations, and it is an
+        # opportunity rather than a wall: the strand is what running that
+        # model heavier would buy back.
+        if mix := scoped_strand(windows, seven):
+            name, reachable, scope_left = mix
+            advice.append(
+                (
+                    "info",
+                    f"{name}: ~{reachable}% of its {scope_left}% left reachable "
+                    f"at this mix · heavier {name} extracts more",
+                )
+            )
         five = next((w for w in windows if w["name"] == "5h"), None)
         # windows AHEAD of the one you are in — the same definition
         # statusline folds into `...▯(✕N)`, so the two surfaces cannot print

@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import timedelta
 
-from conftest import cc, five_entry, flat_profile, hour_shape, seven_entry
+from conftest import cc, five_entry, flat_profile, hour_shape, scoped_entry, seven_entry
 
 DAY = 86400
 
@@ -22,6 +22,10 @@ def advice(now, windows, **kw) -> list[tuple[str, str]]:
 
 def budget_of(lines: list[tuple[str, str]]) -> str:
     return next(msg for level, msg in lines if msg.startswith("budget:"))
+
+
+def mix_of(lines: list[tuple[str, str]]) -> str | None:
+    return next((msg for _, msg in lines if "at this mix" in msg), None)
 
 
 def warns_of(lines: list[tuple[str, str]]) -> list[str]:
@@ -202,6 +206,117 @@ def test_the_awake_count_stops_where_access_does(utc_tz, utc_now):
     ))
     assert "~5 windows left · ~3 awake · 23.3%/window stays even" in line
     assert "trial ends ~Aug 27" in line
+
+
+# --- two pools, one wall -------------------------------------------------
+
+def two_pools(
+    now, seven: int, scope: int, *, name: str = "fable",
+    remaining: float = 2 * DAY, skew: float = 0.0, active: bool = False,
+) -> list[dict]:
+    """An account pool and one model-scoped pool ending the same week."""
+    return [
+        seven_entry(seven, remaining, now),
+        scoped_entry(name, scope, remaining + skew, now, active=active),
+    ]
+
+
+def test_the_mix_says_what_a_7d_point_buys(utc_now):
+    """81% of the account gone against 63% of the model's own pool: this week
+    bought 0.78 scoped points per 7d point, so the 19 points left on the
+    account reach 15 of the model's 37 and the other 22 expire. Same split,
+    read two ways — the row names the reachable half and the pool it is a
+    half of, because 22 wasted points is not something anyone can act on."""
+    line = mix_of(advice(utc_now, two_pools(utc_now, 81, 63)))
+    assert line == (
+        "fable: ~15% of its 37% left reachable at this mix · "
+        "heavier fable extracts more"
+    )
+
+
+def test_the_strand_sits_directly_above_the_budget_line(utc_now):
+    """It qualifies the very headroom the budget rations; a reader who meets
+    the ration first has already spent the number being qualified."""
+    lines = advice(utc_now, two_pools(utc_now, 81, 63))
+    assert [level for level, _ in lines[-2:]] == ["info", "info"]
+    assert lines[-2][1] == mix_of(lines)
+    assert lines[-1][1] == budget_of(lines)
+
+
+def test_no_scoped_pool_no_reading(utc_now):
+    assert mix_of(advice(utc_now, [seven_entry(81, 2 * DAY, utc_now)])) is None
+
+
+def test_only_a_weekly_pool_can_be_read_against_the_week(utc_now):
+    """A scoped 5h cap shares no wall with the 7d: its utilization is a
+    fraction of a different, shorter window and the ratio would be fiction."""
+    hourly = five_entry(63, 3 * 3600, utc_now)
+    hourly["name"] = "fable"
+    lines = advice(utc_now, [seven_entry(81, 2 * DAY, utc_now), hourly])
+    assert mix_of(lines) is None
+
+
+def test_a_young_week_has_no_mix_yet(utc_now):
+    """Under a day in, both counters are a handful of samples off zero and
+    the ratio between them swings with every one of them."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 63, remaining=6.5 * DAY))) is None
+
+
+def test_two_walls_are_two_weeks(utc_now):
+    """A couple of minutes is clock skew. Five is a scoped pool counting a
+    different week, and two counters that did not start together are not a
+    ratio — the gate is what keeps this honest if the walls ever split."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 63, skew=90))) is not None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 63, skew=300))) is None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 63, skew=-300))) is None
+
+
+def test_an_untouched_model_is_not_a_mix(utc_now):
+    """4% on the scoped pool is the underuse question, not a rate: read as a
+    mix it promises a strand nobody was ever heading for."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 4))) is None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 5))) is not None
+
+
+def test_which_cap_binds_is_a_question_only_near_the_end(utc_now):
+    """At 59% of the account nothing binds yet; the pools have four more days
+    to change their minds about each other."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 59, 40))) is None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 60, 40))) is not None
+
+
+def test_two_pools_draining_together_have_nothing_to_say(utc_now):
+    """Nine points of strand is rounding wearing advice; ten is a model you
+    could actually be running harder."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 80, 73))) is None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 80, 72))) is not None
+
+
+def test_a_capped_pool_is_its_own_notice(utc_now):
+    """Once either wall is reached the block already says so, and a mix rate
+    read off a counter that stopped moving is a reading of the past."""
+    assert mix_of(advice(utc_now, two_pools(utc_now, 100, 63))) is None
+    assert mix_of(advice(utc_now, two_pools(utc_now, 81, 100))) is None
+
+
+def test_the_running_model_answers_before_the_deeper_one(utc_now):
+    """Depth is a guess at which pool the reader cares about; is_active is
+    the account saying it outright."""
+    windows = [
+        seven_entry(81, 2 * DAY, utc_now),
+        scoped_entry("opus", 70, 2 * DAY, utc_now),
+        scoped_entry("fable", 63, 2 * DAY, utc_now, active=True),
+    ]
+    assert mix_of(advice(utc_now, windows)).startswith("fable: ~15% of its 37%")
+
+
+def test_with_no_model_running_the_deepest_pool_answers(utc_now):
+    windows = [
+        seven_entry(81, 2 * DAY, utc_now),
+        scoped_entry("opus", 70, 2 * DAY, utc_now),
+        scoped_entry("fable", 63, 2 * DAY, utc_now),
+    ]
+    assert mix_of(advice(utc_now, windows)).startswith("opus: ~16% of its 30%")
 
 
 # --- boundaries ----------------------------------------------------------

@@ -63,6 +63,10 @@ sorted by tier.
   shaped by local hour, so a dry-out lands where you will see it instead
   of at 03:00, and `~6 awake` beside `~9 windows left` rations the pool
   across the windows you are actually up for.
+- Two pools, one wall: when a model-scoped weekly cap drains slower than
+  the account's 7d, the 7d ends the week first and the rest of that model
+  strands. The row above the budget says what this week's mix can still
+  reach (`fable: ~15% of its 37% left reachable at this mix`).
 - Budget math truncates at the subscription period end (derived from
   the billing anniversary — the API exposes no cancel/renew date, so
   the boundary is assumed and marked with `~`).
