@@ -139,8 +139,9 @@ writer can rotate without eating the other's history. Readers read
   writers implement the same arithmetic, and a reader that re-rounded
   would be a third opinion. Omitted when nothing was learned; a reader
   takes flat (all 1.0) for absent, short, out-of-range or off-mean, and
-  never goes silent over it. `REST_MULT_MAX = 0.25` marks a rest hour.
-  Full contract: docs/statusline-interop.md.
+  never goes silent over it. `REST_MULT_MAX = 0.25` marks a rest hour, and
+  `REST_SLOT_AWAKE_MIN_SECS = 9000` marks a 5h ledger slot as a night when
+  under half of it is waking. Full contract: docs/statusline-interop.md.
 
   This is the one derived cache more than one tool wants to write, so
   `schema` versions the MODEL (2 = envelope burn) and the rule cuts both

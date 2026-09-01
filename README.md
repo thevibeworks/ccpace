@@ -51,8 +51,10 @@ sorted by tier.
   baseline (ran, cost under a point — the shortest bar of the same block,
   so the zero line and the bars share one font), `░` unknown, `▮` now,
   `▯` ahead, `×` won't be covered at current pace, `┤` access ends there.
-  The cells are a grid anchored to the period start, so read them for
-  shape; the budget line's count comes from the clocks.
+  An ahead-cell you'll sleep through most of draws dim once your hours are
+  learned — same glyph, tint stepped back, so the week ahead reads as a
+  shape and not a count. The cells are a grid anchored to the period start,
+  so read them for shape; the budget line's count comes from the clocks.
 - The advisor: walls (`!`) and one budget line — windows left, the ration
   that keeps you even, and where the week lands. The landing comes from
   your own weekday profile once there are two weeks of history (`on your

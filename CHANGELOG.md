@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.6.0 — the night on the ledger (2026-09-01)
+
+v0.4.0 taught the forecast that you sleep. The ledger still did not know:
+
+```
+▂▃▅▁▂▄█▃▁▁▂▅▄▃▁▂▃▅▄▂▁▃▄▅▃▂▮▯▯▯▯▯▯▯
+```
+
+Nine hollow cells, all drawn the same, and three of them are the middle of
+two nights. The row said "nine slots ahead" while the budget line beside it
+said `~6 awake` — one surface counting clock, the other already counting
+yours.
+
+### The future is a shape, not a count
+
+An ahead-cell whose 5h slot has under `REST_SLOT_AWAKE_MIN_SECS` (9000 —
+half a window) of waking seconds now draws DIM. Same ▯: the glyph is the
+fact, the tint is the refinement, and a reader who cannot see the tint
+loses nothing they could have acted on — a dim ▯ is still a window ahead,
+it is just one the capacity is unlikely to reach. Waking hours are the
+v0.4.0 arithmetic exactly (`mult >= REST_MULT_MAX` over the slot's real
+wall span), so nothing here is a second opinion about your day.
+
+The wall span is the whole rule. 20:00–01:00 and 05:00–10:00 straddle the
+same night's two edges and the hour a slot OPENS in gets both of them
+wrong: the first is four waking hours and a window you can spend, the
+second is two and a night. On the 5h grid every slot straddles something.
+
+Gated on the evidence the walk already needs — a valid `hour_profile` and
+`FORECAST_MIN_DAYS` of history. Unlearned, the row is byte-for-byte the
+row it was in v0.5.0, tints and all, and the tests hold it there against
+every way of not knowing: no field, a truncated one, a nonsense one, a
+real one with a fortnight of history missing behind it.
+
+`×` beats rest — a slot the pool will not cover is unreachable for a
+stronger reason than sleep, and drawing it as a night would hide that. ▮
+and every cell of the record are untouched.
+
+### Same rule on both surfaces
+
+`REST_SLOT_AWAKE_MIN_SECS` is a shared READING RULE, not a cache field:
+statusline v0.38.0 dims the same slots on its own 7d strip (and each rest
+hour on the 5h one) off the same `forecast.cache`. `schema` stays 2; no
+field moved. Documented in `docs/statusline-interop.md`. The dim cells and
+the budget's `~N awake` may differ by one — the strip is a grid on the
+period start, the count comes from real clocks — the same tolerance the
+window count itself already carries.
+
+Internally the two now share one `awake_seconds()`; the budget's count and
+the ledger's nights were never allowed to be two implementations.
+
 ## v0.5.0 — two pools, one wall (2026-09-01)
 
 An account at 81% of its week with a model-scoped pool at 63% has two

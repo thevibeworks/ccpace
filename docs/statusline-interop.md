@@ -74,6 +74,20 @@ tools, doubled API fetches, and two dialects of the same record.
      disagreeing about how much of it is left. `schema` stays 2: the
      model of the existing fields did not change.
 
+     `REST_SLOT_AWAKE_MIN_SECS = 9000` is the second reading rule off the
+     same field (ccpace 0.6.0 / statusline 0.38.0): a 5h slot on either
+     tool's 7d grid is a NIGHT when under half of it — half a window — is
+     waking seconds by the rule above, measured across the slot's whole
+     wall span rather than the hour it opens in. Both tools draw such a
+     slot as the same hollow ▯ in a dim tint; neither invents a glyph, and
+     `×` (the pool will not reach it) wins over rest on both. Unlearned by
+     the read validation above, or short of `days_history >= 14`, and the
+     rows draw exactly as they did before the rule existed. The dim cells
+     and the `~N awake` count may differ by one: the grid is anchored to
+     the period start and the count comes from real clocks — the same
+     one-cell tolerance the two surfaces already document for the window
+     count itself. `schema` still stays 2: no field moved.
+
    - Not every shared rule is a field. The SCOPED STRAND reading (ccpace
      0.5.0 / statusline 0.37.0) is computed live off the usage payload and
      touches `forecast.cache` not at all. The account's 7d pool and a

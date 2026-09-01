@@ -8,9 +8,11 @@ the reader to tell which one was the forecast.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
+import pytest
 from conftest import cc, five_entry, flat_profile, hour_shape, scoped_entry, seven_entry
 
 DAY = 86400
@@ -385,3 +387,115 @@ def test_the_ledger_never_drifts_more_than_a_cell_from_the_count(utc_now):
             drawn = strip.split("▮", 1)[1].count("▯")
             worst = max(worst, abs(drawn - cc.windows_ahead(seven, five)))
     assert worst == 1
+
+
+# --- the night on the ledger ---------------------------------------------
+
+ANSI_OR_CHAR = re.compile(r"\x1b\[[0-9;]*m|.")
+
+
+@pytest.fixture
+def tty(monkeypatch):
+    """The ledger tints only on a terminal, and pytest's stdout is not one."""
+    monkeypatch.setattr(cc, "supports_color", lambda: True)
+
+
+def tinted(strip: str) -> list[tuple[str, str]]:
+    """(glyph, tint in force) per cell — the row as the eye actually gets it."""
+    tint, cells = "", []
+    for token in ANSI_OR_CHAR.findall(strip):
+        if token.startswith("\x1b"):
+            tint = "" if token == cc.RESET else tint + token
+        else:
+            cells.append((token, tint))
+    return cells
+
+
+def ahead(strip: str) -> list[tuple[str, str]]:
+    """Only the cells right of ▮ — the future this row is now shaping."""
+    cells = tinted(strip)
+    return cells[next(i for i, (g, _) in enumerate(cells) if g == "▮") + 1:]
+
+
+def week_grid(now, **kw) -> dict:
+    """A 7d window whose 5h grid lands on round hours: a reset two days out
+    opens slot 0 at 09:00 and puts slot 24 exactly on `now`, so the nine
+    slots ahead are 14:00, 19:00, 00:00, 05:00, 10:00, 15:00, 20:00, 01:00
+    and 06:00 — stated, not counted off a drawing."""
+    return {**seven_entry(44, 2 * DAY, now), **kw}
+
+
+def at(day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 8, day, hour, minute, tzinfo=timezone.utc)
+
+
+def night_hours() -> list[float]:
+    return cc.hour_multipliers({"hour_profile": hour_shape(range(8))})
+
+
+def test_a_slot_is_a_night_when_under_half_of_it_is_waking(utc_tz):
+    """The slot's own wall span decides, never the hour it opens in — every
+    5h slot on a 24h clock straddles something, and the two that straddle
+    the same night's edges are not the same kind of slot."""
+    mult = night_hours()
+    assert cc.slot_is_rest(mult, at(26, 3), at(26, 8))  # dead centre of it
+    assert not cc.slot_is_rest(mult, at(26, 10), at(26, 15))  # dead centre of the day
+    assert cc.slot_is_rest(mult, at(26, 23), at(27, 4))  # opens awake, sleeps four
+    assert not cc.slot_is_rest(mult, at(26, 7), at(26, 12))  # opens asleep, wakes four
+
+
+def test_half_a_window_awake_is_still_a_window(utc_tz):
+    """REST_SLOT_AWAKE_MIN_SECS is a floor to fall BELOW: exactly 2h30m of
+    waking time is a window you can spend, a minute less is a night."""
+    mult = night_hours()
+    span = (at(26, 5, 30), at(26, 10, 30))
+    assert cc.awake_seconds(mult, *span) == cc.REST_SLOT_AWAKE_MIN_SECS == 9000
+    assert not cc.slot_is_rest(mult, *span)
+    assert cc.slot_is_rest(mult, at(26, 5, 29), at(26, 10, 29))
+
+
+def test_the_future_stops_being_one_number_and_becomes_a_shape(utc_tz, utc_now, tty):
+    """Nine slots ahead, three of them nights, all of them still ▯ — the
+    glyph is the fact and the tint is the refinement. 05:00-10:00 is a night
+    (two waking hours) and 20:00-01:00 is not (four): the same edge, two
+    different slots."""
+    strip = cc.format_window_ledger(
+        week_grid(utc_now), {}, None, utc_now, forecast=rested()
+    )
+    assert [g for g, _ in ahead(strip)] == list("▯" * 9)
+    assert [t == cc.DIM for _, t in ahead(strip)] == [
+        False, False, True, True, False, False, False, True, False
+    ]
+    # ▮ and every cell of the record left of it are untouched
+    bare = cc.format_window_ledger(week_grid(utc_now), {}, None, utc_now)
+    assert strip.split("▮")[0] == bare.split("▮")[0]
+    assert dict(tinted(strip))["▮"] == cc.BOLD
+
+
+def test_an_unlearned_row_is_the_row_it_always_was(utc_tz, utc_now, tty):
+    """Byte-identical, tints and all. A tool that has not learned your hours
+    does not get to guess at them, and every way of not knowing them — no
+    field, a truncated one, a nonsense one, a real one with a fortnight of
+    history missing behind it — lands on the same row."""
+    for color in (True, False):
+        was = cc.format_window_ledger(week_grid(utc_now), {}, None, utc_now, color=color)
+        for forecast in (
+            None,
+            flat_profile(10),
+            rested(days=10),
+            {**flat_profile(10), "hour_profile": {"0": 1.0}},
+            {**flat_profile(10), "hour_profile": {str(h): 30.0 for h in range(24)}},
+        ):
+            assert cc.format_window_ledger(
+                week_grid(utc_now), {}, None, utc_now, color=color, forecast=forecast
+            ) == was
+
+
+def test_a_slot_the_pool_cannot_reach_stays_red(utc_tz, utc_now, tty):
+    """× beats rest. A window the 7d pool will not cover is unreachable for
+    a stronger reason than sleep, and two of these would have been nights."""
+    entry = week_grid(utc_now, cap_eta=utc_now + timedelta(hours=15))
+    cells = ahead(cc.format_window_ledger(entry, {}, None, utc_now, forecast=rested()))
+    assert [g for g, _ in cells] == list("▯▯×××××××")
+    assert all(tint == cc.RED for g, tint in cells if g == "×")
+    assert not any(tint == cc.DIM for _, tint in cells)

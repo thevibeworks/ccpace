@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.5.0
+# Version: 0.6.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -35,7 +35,8 @@ per 5h window of the period (34 cells), left to right in time —
   ▁         ran, burned under a point — the baseline, same block as the bars
   ░         unknown: no samples on record for that window
   ▮         the window you are in now
-  ▯         a window still ahead of you (the hollow of ▮: an empty slot)
+  ▯         a window still ahead of you (the hollow of ▮: an empty slot),
+            drawn dim when your learned hours say you sleep through it
   ×         a window the 7d pool will not cover at the current pace
   ┤         access ends here (trial end, or the derived sub period end
             assumed binding — the API states no renewal/cancel date)
@@ -77,7 +78,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -145,6 +146,11 @@ FORECAST_RESET_DROP = 15
 # both surfaces share (docs/statusline-interop.md): below it, you are asleep.
 FORECAST_HOUR_FLOOR = 0.1
 REST_MULT_MAX = 0.25
+# A 5h ledger slot is a NIGHT when under half of it is waking time. Half a
+# window is the break-even a reader can hold in their head: more asleep than
+# awake and the slot is capacity you will not reach. Shared with statusline
+# (docs/statusline-interop.md) so both surfaces dim the same cells.
+REST_SLOT_AWAKE_MIN_SECS = 9000
 # A 7d window younger than this has no evidence of its own: the profile
 # describes the windows BEFORE it, and the recent-24h blend describes a day
 # that sits on the far side of the reset.
@@ -1380,6 +1386,35 @@ def local_hour_segments(
         cursor = segment_end
 
 
+def awake_seconds(mult: list[float], start: datetime, end: datetime) -> float:
+    """How much of [start, end) you are likely to be awake for.
+
+    An hour whose multiplier is under REST_MULT_MAX is rest, and rest is not
+    runway. One implementation for every surface that asks: the budget's
+    `~N awake` and the ledger's dim cells are two readings of this number,
+    and two surfaces that disagree about how much of the week you are awake
+    for is the same failure as disagreeing about how much of it is left.
+    """
+    tz = primary_tz() or datetime.now().astimezone().tzinfo
+    return sum(
+        seconds
+        for _, local, seconds in local_hour_segments(start, end, tz)
+        if mult[local.hour] >= REST_MULT_MAX
+    )
+
+
+def slot_is_rest(mult: list[float], start: datetime, end: datetime) -> bool:
+    """Is this 5h ledger slot one you will sleep through?
+
+    Classified by the slot's whole WALL SPAN, never by the hour it opens in:
+    a slot that starts at 22:00 is most of an evening and a slot that starts
+    at 02:00 is not, and both of them straddle the onset of the same night.
+    Under REST_SLOT_AWAKE_MIN_SECS of waking time the slot is capacity that
+    is on the grid without really being available.
+    """
+    return awake_seconds(mult, start, end) < REST_SLOT_AWAKE_MIN_SECS
+
+
 def project_week(
     forecast: dict | None,
     entry: dict,
@@ -1687,6 +1722,7 @@ def format_window_ledger(
     width: int = WEEK_STRIP_WIDTH,
     color: bool = True,
     access_end: datetime | None = None,
+    forecast: dict | None = None,
 ) -> str:
     """The 7d period as its 5h windows: what each cost, and what is left.
 
@@ -1697,11 +1733,22 @@ def format_window_ledger(
       ░         unknown — outside the sample store's coverage
       ▮         the window you are in now
       ▯         a window still ahead of you (the hollow of ▮: an empty slot)
+      ▯ dim     ahead, but you will sleep through most of it
       ×         a window the 7d pool will not cover at the current pace
       ┤         access ends here — the strip stops, those windows are not yours
     Unknown and idle are deliberately different glyphs: drawing a gap in
     the record as an idle session is the one lie this surface must not
     tell.
+
+    The night is the one refinement carried by tint alone, and it is the one
+    case where that is honest: a dim ▯ is still a window ahead of you, so a
+    reader who cannot see the tint loses nothing they could have acted on —
+    it says only how likely that capacity is to be reachable. The future
+    stops being one number and becomes a SHAPE. Gated on the same evidence
+    the walk needs (a valid hour_profile and FORECAST_MIN_DAYS of history);
+    unlearned, the row is byte-for-byte what it was. × wins over rest: a
+    slot the pool cannot cover is unusable for a stronger reason, and ▮ and
+    every history cell are untouched.
 
     The cells are a GRID anchored to the period start, not a row of your
     real 5h windows — those are anchored to the 5h reset, which is only in
@@ -1712,9 +1759,13 @@ def format_window_ledger(
     count. Measured across a full week of positions the gap is bounded at
     one and the two agree about three times in four. The SENTENCE owns the
     number: it comes from real clocks (windows_ahead), and this row does not
-    re-derive it off a drawing.
+    re-derive it off a drawing. The dim cells sit under the same tolerance,
+    and for the same reason: they are grid slots, `~N awake` is clocks.
     """
     period_start = window_period_start(entry)
+    mult = None
+    if (forecast or {}).get("days_history", 0) >= FORECAST_MIN_DAYS:
+        mult = hour_multipliers(forecast)
     now_ts = now.timestamp()
     now_slot = int((now_ts - period_start) // WINDOW_5H_SEC)
     dry_slot = None
@@ -1760,7 +1811,13 @@ def format_window_ledger(
         elif dry_slot is not None and i >= dry_slot:
             cells.append(("×", "dry"))
         else:
-            cells.append(("▯", "future"))
+            slot_start = period_start + i * WINDOW_5H_SEC
+            rest = mult is not None and slot_is_rest(
+                mult,
+                datetime.fromtimestamp(slot_start, timezone.utc),
+                datetime.fromtimestamp(slot_start + WINDOW_5H_SEC, timezone.utc),
+            )
+            cells.append(("▯", "rest" if rest else "future"))
 
     if not color or not supports_color():
         return "".join(g for g, _ in cells)
@@ -1771,6 +1828,7 @@ def format_window_ledger(
         "unknown": DIM,
         "now": BOLD,
         "future": "",
+        "rest": DIM,
         "dry": RED,
         "end": YELLOW,
         "gap": "",
@@ -1954,14 +2012,11 @@ def awake_windows(
     Callers clamp it to windows_ahead (the two describe one horizon, and the
     awake count may never exceed the count it refines).
     """
-    tz = primary_tz() or datetime.now().astimezone().tzinfo
-    start = now + timedelta(seconds=max(0.0, start_sec))
-    awake = 0.0
-    for _, local, seconds in local_hour_segments(
-        start, now + timedelta(seconds=end_sec), tz
-    ):
-        if mult[local.hour] >= REST_MULT_MAX:
-            awake += seconds
+    awake = awake_seconds(
+        mult,
+        now + timedelta(seconds=max(0.0, start_sec)),
+        now + timedelta(seconds=end_sec),
+    )
     return int((awake + WINDOW_5H_SEC - 1) // WINDOW_5H_SEC)
 
 
@@ -2684,6 +2739,7 @@ def print_window_ledger_row(
     now: datetime | None = None,
     access_end: datetime | None = None,
     samples: list[Sample] | None = None,
+    forecast: dict | None = None,
 ) -> None:
     """Print the 7d period's 5h windows as one row under the quota rows.
 
@@ -2691,6 +2747,9 @@ def print_window_ledger_row(
     much is left", this answers "where did it go, and what is still
     ahead". Keeping them separate lets each stay the shape its data
     actually is.
+
+    The forecast is what lets the ahead-cells say which nights they are;
+    without one they draw exactly as they always did.
     """
     now = now or datetime.now(timezone.utc)
     if samples is None:
@@ -2698,7 +2757,13 @@ def print_window_ledger_row(
     period_start = window_period_start(entry)
     costs, span = build_window_history(samples, period_start, WEEK_STRIP_WIDTH)
     ledger = format_window_ledger(
-        entry, costs, span, now, color=use_color, access_end=access_end
+        entry,
+        costs,
+        span,
+        now,
+        color=use_color,
+        access_end=access_end,
+        forecast=forecast,
     )
     print(" " * ROW_BAR_INDENT + ledger)
 
@@ -2908,21 +2973,13 @@ def format_usage_display(
     if label:
         samples, corpus = load_account_corpus(alias, acct_uuid, log_dir)
 
-    if seven_entry and shutil.get_terminal_size().columns >= WEEK_STRIP_MIN_COLS:
-        print_window_ledger_row(
-            seven_entry,
-            use_color,
-            now=now,
-            access_end=access[0] if access else None,
-            samples=samples,
-        )
-
-    # The projection is built BEFORE the advice, because the advice is
-    # built around it: the budget line's landing and the dry warning are two
-    # readings of one walk, not two lines that happen to be adjacent. They
-    # used to be exactly that — a budget saying "heading ~61%" off linear
-    # pace with a forecast under it saying "lands ~177%" off a different
-    # model, on the same week, in the same breath.
+    # The projection is built BEFORE the surfaces that read it, because both
+    # of them are built around it: the budget line's landing and the dry
+    # warning are two readings of one walk, not two lines that happen to be
+    # adjacent. They used to be exactly that — a budget saying "heading ~61%"
+    # off linear pace with a forecast under it saying "lands ~177%" off a
+    # different model, on the same week, in the same breath. The ledger row
+    # joined them when its ahead-cells learned which ones are nights.
     projection = None
     forecast = None
     if seven_entry and samples and label:
@@ -2935,6 +2992,16 @@ def format_usage_display(
                 write_forecast_cache(alias, forecast)
         projection = project_week(
             forecast, seven_entry, now, access[0] if access else None
+        )
+
+    if seven_entry and shutil.get_terminal_size().columns >= WEEK_STRIP_MIN_COLS:
+        print_window_ledger_row(
+            seven_entry,
+            use_color,
+            now=now,
+            access_end=access[0] if access else None,
+            samples=samples,
+            forecast=forecast,
         )
 
     advice = build_advice(data, windows, access, projection, now, forecast)
