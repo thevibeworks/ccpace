@@ -111,6 +111,23 @@ the DATE, and the `!` row is where it goes. Two lines describing one week
 with two numbers is not more information; it is an argument the reader has
 to settle.
 
+A 5h cap is not a weekly cap. Its quota row says `cap`, never the occasional
+endpoint value `101%`; the reset is the useful fact once the counter binds.
+The wall row keeps the weekly pool beside it: `5h capped · 47% of 7d left · back
+@Tue 2 04:00`. Claude Code may offer `/low-priority` there, but that gated
+offer and its allowance are absent from `/api/oauth/usage`; this surface
+states the two counters it can prove and does not impersonate session state.
+
+## Notifications
+
+The watch surface and its side channels share one vocabulary. Every event
+payload names `window`, `utilization`, `reset_at`, and the display-safe
+`reset_time`; producers do not invent aliases that formatters have to guess.
+The envelope adds a stable, readable `id` (`full:work:5h:<reset>`), so a
+custom notifier can dedupe or trace one condition across process restarts.
+Threshold and delta IDs add the utilization that caused the event; two real
+climbs inside one window remain two events.
+
 ## Provenance on the rule
 
 `(cached)` frozen at 100% until reset · `(stale 12m · !429)` last fetch

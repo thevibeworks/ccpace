@@ -191,6 +191,12 @@ pool. Whichever tool fetched last serves both:
   is shown at any age with a `(stale <age> · !429)` badge and the next
   poll is the retry.
 
+Lower-priority mode is deliberately not part of this store. Its offer,
+active state, and separate allowance are session/request facts that are not
+present in `/api/oauth/usage`. A consumer may distinguish a capped 5h window
+from remaining `seven_day` headroom, but must not turn that relation into a
+claim that `/low-priority` is available.
+
 ## Fetch discipline (rate-limit hygiene)
 
 Defaults chosen so a fleet of watchers stays invisible to the API:

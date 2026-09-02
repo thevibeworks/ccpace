@@ -340,7 +340,7 @@ def test_access_end_truncates_the_budget_and_mutes_the_landing(utc_now):
 def test_a_capped_week_says_when_it_comes_back(utc_now):
     seven = seven_entry(100, 2 * DAY, utc_now)
     (warn,) = warns_of(advice(utc_now, [seven]))
-    assert warn.startswith("7d capped - resets in")
+    assert warn.startswith("7d capped · back @")
 
 
 def test_hot_segments_stop_the_eye_only_near_the_cap(utc_now):

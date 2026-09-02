@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — name the wall
+
+Claude Code can now offer `/low-priority` at a spent 5h session window, but
+the gated offer, active mode, and separate allowance do not exist in
+`/api/oauth/usage`. ccpace now says what its source can prove:
+`5h capped · 47% of 7d left · back @Tue 2 04:00`. It distinguishes the
+shorter wall from the weekly pool without claiming a session-only escape is
+available for an account it cannot see into.
+
+Notifications now carry the same facts. Their producers and formatter had
+drifted onto different key names, causing real threshold and delta messages
+to say `0%`; the payload now has canonical `window`, `utilization`,
+`reset_at`, and `reset_time` fields while retaining the old aliases for
+custom hooks. Custom-notifier envelopes also gain a stable event `id`, such
+as `full:work:5h:<reset>`, for dedupe and tracing across restarts.
+
 ## v0.7.0 — a guess may not delete a window (2026-09-01)
 
 **The `×` cell is retired.** The ledger used to overwrite dry-projected

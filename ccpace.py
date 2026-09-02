@@ -49,7 +49,8 @@ notifications: system notify is automatic; add channels with flags/env.
   --bark [URL] / CCPACE_BARK     bark endpoint (<server>/KEY); bare --bark
                                  uses BARK_KEY on BARK_SERVER (bark CLI env)
   --notifier PATH / CCPACE_NOTIFIER  custom script, JSON on stdin:
-    {"event": "threshold|full|delta|pace|reset", "account": "...", "data": {...}}
+    {"id": "...", "event": "threshold|full|delta|pace|reset",
+     "account": "...", "data": {...}}
 """
 
 from __future__ import annotations
@@ -2102,17 +2103,20 @@ def build_advice(
     now = now or datetime.now(timezone.utc)
     advice: list[tuple[str, str]] = []
     seven_warned = False
+    seven = next((w for w in windows if w["name"] == "7d"), None)
 
     for w in windows:
         name, util, pace = w["name"], w["util"], w["pace"]
         if util >= 100:
-            advice.append(
-                (
-                    "warn",
-                    f"{name} capped - resets in {format_duration(int(w['remaining']))} "
-                    f"({format_reset_weekday(w['reset_dt'])})",
-                )
-            )
+            parts = [f"{name} capped"]
+            # A spent session window is not an exhausted week. Claude Code
+            # may offer /low-priority here, but eligibility and its separate
+            # allowance do not exist in /api/oauth/usage, so ccpace states
+            # only what it can prove: the weekly pool still behind the wall.
+            if name == "5h" and seven and seven["util"] < 100:
+                parts.append(f"{100 - seven['util']}% of 7d left")
+            parts.append(f"back {format_reset_weekday(w['reset_dt'])}")
+            advice.append(("warn", " · ".join(parts)))
             if name == "7d":
                 seven_warned = True
             continue
@@ -2146,7 +2150,6 @@ def build_advice(
     # reset, that is the fact worth a warn row: a DATE, not a percentage
     # above 100. Guarded by the same `seven_warned` flag the pace warning
     # uses, so the block never carries two walls for one window.
-    seven = next((w for w in windows if w["name"] == "7d"), None)
     if seven and projection and projection[1] is not None and not seven_warned:
         dry = projection[1]
         gap = (seven["reset_dt"] - dry).total_seconds()
@@ -2584,17 +2587,24 @@ def notify_bark(url: str, title: str, message: str, event: str) -> None:
 
 def format_notification_message(event: str, account: str, data: dict) -> str:
     """Format human-readable notification message for system fallback."""
+    window = data.get("window") or "quota"
+    util = data.get("utilization", 0)
+    reset = data.get("reset_time") or ""
+    reset_part = f" · back {reset}" if reset else ""
     if event == "threshold":
-        util = data.get("utilization", 0)
         thresh = data.get("threshold", 0)
-        return f"{account}: {util}% usage (threshold: {thresh}%)"
+        return f"{account}: {window} {util}% · threshold {thresh}%{reset_part}"
     if event == "full":
-        return f"{account}: quota full (100%)"
+        weekly = data.get("weekly_headroom")
+        headroom = (
+            f" · {weekly}% of 7d left"
+            if window == "5h" and isinstance(weekly, int) and weekly > 0
+            else ""
+        )
+        return f"{account}: {window} capped{headroom}{reset_part}"
     if event == "delta":
-        util = data.get("utilization", 0)
         delta = data.get("delta", 0)
-        reset = data.get("reset_short", "")
-        return f"{account}: {util}% (+{delta}%) reset {reset}"
+        return f"{account}: {window} {util}% (+{delta}%){reset_part}"
     if event == "pace":
         window = data.get("window", "")
         pace = data.get("pace", 0)
@@ -2603,6 +2613,21 @@ def format_notification_message(event: str, account: str, data: dict) -> str:
     if event == "reset":
         return f"{account}: quota reset at {data.get('reset_time', '')}"
     return f"{account}: {event}"
+
+
+def notification_event_id(event: str, account: str, data: dict) -> str:
+    """Stable, inspectable identity for a notification condition.
+
+    A custom notifier can dedupe `full` or `pace` across restarts by the
+    window's reset instant. Delta and threshold events add the reading that
+    caused them, so two real climbs inside one window remain distinct.
+    """
+    window = str(data.get("window") or "quota")
+    reset = str(data.get("reset_at") or data.get("reset_time") or "unknown")
+    parts = [event, account or "default", window, reset]
+    if event in ("delta", "threshold"):
+        parts.append(str(data.get("utilization", "unknown")))
+    return ":".join(parts)
 
 
 def send_notification(
@@ -2634,7 +2659,12 @@ def _send_notification(
     data: dict,
     notifier: str | None = None,
 ) -> None:
-    payload = {"event": event, "account": account, "data": data}
+    payload = {
+        "id": notification_event_id(event, account, data),
+        "event": event,
+        "account": account,
+        "data": data,
+    }
     title = f"Claude {event.title()}"
     message = format_notification_message(event, account, data)
 
@@ -2709,7 +2739,10 @@ def print_window_line(
     pace = entry["pace"] if entry else None
     # the number inherits the bar's temperature once it matters; calm
     # rows keep a plain figure so hot ones actually stand out
-    util_txt = f"{util:3d}%"
+    # The endpoint has emitted 101 at the binding wall. Above 100 there is no
+    # extra reading to communicate: the state is cap and the reset owns the
+    # next decision. Keep the row's four-column grammar either way.
+    util_txt = f"{'cap':>4}" if util >= 100 else f"{util:3d}%"
     if use_color and util >= 80:
         util_txt = f"{BOLD}{RED}{util_txt}{RESET}"
     elif use_color and util >= 60:
@@ -2870,7 +2903,7 @@ def format_usage_display(
     # question (how much of THIS window is left), so none of them gets a
     # different shape — the ledger below is where the other question lives.
     five = data.get("five_hour") or {}
-    five_util = int(five.get("utilization", 0) or 0)
+    five_util = min(100, int(five.get("utilization", 0) or 0))
     entry = by_name.get("5h")
     if entry:
         print_window_line(
@@ -2884,7 +2917,7 @@ def format_usage_display(
         print_no_session_line("5h", use_color)
 
     seven = data.get("seven_day") or {}
-    seven_util = int(seven.get("utilization", 0) or 0)
+    seven_util = min(100, int(seven.get("utilization", 0) or 0))
     seven_entry = by_name.get("7d")
     if seven_entry:
         print_window_line(
@@ -2920,7 +2953,7 @@ def format_usage_display(
         if not scope:
             continue  # session/weekly_all already shown via five_hour/seven_day
         model = (scope.get("model") or {}).get("display_name") or lim.get("kind")
-        util = int(lim.get("percent", 0) or 0)
+        util = min(100, int(lim.get("percent", 0) or 0))
         # the model name IS the label; a 2-char tag needed a suffix crutch
         tag = (model or "??").lower()[:5]
         print_window_line(
@@ -3363,29 +3396,47 @@ def handle_notifications(
     timestamp = timestamp_now()
     tier = get_account_tier_label(profile)
 
-    five = (data.get("five_hour") or {}) if data else {}
-    seven = (data.get("seven_day") or {}) if data else {}
+    data = data or {}
+    five = data.get("five_hour") or {}
+    seven = data.get("seven_day") or {}
     five_util = int(five.get("utilization", 0) or 0)
     seven_util = int(seven.get("utilization", 0) or 0)
-    window, reset_time = get_smart_reset_info(data) if data else ("", "")
+    windows = analyze_windows(data, datetime.now(timezone.utc))
+    binding = max(
+        windows,
+        key=lambda w: (w["util"], bool(w["active"])),
+        default=None,
+    )
+    window = binding["name"] if binding else "quota"
+    utilization = min(100, binding["util"] if binding else max_util)
+    reset_at = binding["reset_dt"].isoformat() if binding else ""
+    reset_time = format_reset_local(binding["reset_dt"]) if binding else ""
+    context = {
+        "timestamp": timestamp,
+        "tier": tier,
+        "window": window,
+        "utilization": utilization,
+        "reset_at": reset_at,
+        "reset_time": reset_time,
+        "five_hour_utilization": five_util,
+        "seven_day_utilization": seven_util,
+        "weekly_headroom": max(0, 100 - seven_util),
+        # Compatibility aliases from <=0.7.0. New consumers should use the
+        # canonical names above; existing notifier hooks keep working.
+        "five_util": five_util,
+        "seven_util": seven_util,
+        "reset_window": window,
+    }
 
     if max_util >= threshold and label not in notified_threshold:
         send_notification(
             "threshold",
             account,
-            {
-                "timestamp": timestamp,
-                "tier": tier,
-                "threshold": threshold,
-                "five_util": five_util,
-                "seven_util": seven_util,
-                "reset_window": window,
-                "reset_time": reset_time,
-            },
+            {**context, "threshold": threshold},
             notifier,
         )
         notified_threshold[label] = True
-        messages.append(("threshold", account, max_util, threshold))
+        messages.append(("threshold", account, {**context, "threshold": threshold}))
     elif max_util < threshold and label in notified_threshold:
         del notified_threshold[label]
 
@@ -3393,18 +3444,11 @@ def handle_notifications(
         send_notification(
             "full",
             account,
-            {
-                "timestamp": timestamp,
-                "tier": tier,
-                "five_util": five_util,
-                "seven_util": seven_util,
-                "reset_window": window,
-                "reset_time": reset_time,
-            },
+            context,
             notifier,
         )
         notified_full[label] = True
-        messages.append(("full", account, max_util, threshold))
+        messages.append(("full", account, context))
     elif max_util < 100 and label in notified_full:
         del notified_full[label]
 
@@ -3699,8 +3743,8 @@ def handle_delta_notification(
 
     five = data.get("five_hour") or {}
     prev_five = prev_data.get("five_hour") or {}
-    five_util = int(five.get("utilization", 0) or 0)
-    five_prev = int(prev_five.get("utilization", 0) or 0)
+    five_util = min(100, int(five.get("utilization", 0) or 0))
+    five_prev = min(100, int(prev_five.get("utilization", 0) or 0))
     five_delta = five_util - five_prev
 
     if five_delta <= 0:
@@ -3712,9 +3756,9 @@ def handle_delta_notification(
     seven_prev = int(prev_seven.get("utilization", 0) or 0)
 
     account = get_alias_from_label(label)
-    window, reset_time = get_smart_reset_info(data)
     timestamp = timestamp_now()
     tier = get_account_tier_label(profile)
+    reset_dt = parse_reset_dt(five.get("resets_at"))
 
     send_notification(
         "delta",
@@ -3722,13 +3766,22 @@ def handle_delta_notification(
         {
             "timestamp": timestamp,
             "tier": tier,
+            "window": "5h",
+            "utilization": five_util,
+            "previous_utilization": five_prev,
+            "delta": five_delta,
+            "reset_at": reset_dt.isoformat() if reset_dt else "",
+            "reset_time": format_reset_local(reset_dt) if reset_dt else "",
+            "seven_day_utilization": seven_util,
+            "previous_seven_day_utilization": seven_prev,
+            "weekly_headroom": max(0, 100 - seven_util),
+            # Compatibility aliases from <=0.7.0.
             "five_util": five_util,
             "five_prev": five_prev,
             "five_delta": five_delta,
             "seven_util": seven_util,
             "seven_prev": seven_prev,
-            "reset_window": window,
-            "reset_time": reset_time,
+            "reset_window": "5h",
         },
         notifier,
     )
@@ -3772,6 +3825,7 @@ def handle_pace_notifications(
                 "utilization": w["util"],
                 "pace": round(pace, 2),
                 "cap_eta": format_cap_eta(w["cap_eta"], short),
+                "reset_at": reset_iso,
                 "reset_time": format_reset_local(w["reset_dt"]),
             },
             notifier,
@@ -4231,19 +4285,15 @@ def info_usage_watch(
             if notification_messages:
                 print()
                 symbol = "⚠" if supports_unicode() else "!"
-                for ntype, account, util, thresh in notification_messages:
-                    if ntype == "threshold":
-                        if use_color:
-                            print(
-                                f"{YELLOW}{symbol} {account}: {util}% (threshold: {thresh}%){RESET}"
-                            )
-                        else:
-                            print(f"{symbol} {account}: {util}% (threshold: {thresh}%)")
-                    elif ntype == "full":
-                        if use_color:
-                            print(f"{RED}{symbol} {account}: quota full{RESET}")
-                        else:
-                            print(f"{symbol} {account}: quota full")
+                for ntype, account, event_data in notification_messages:
+                    message = format_notification_message(ntype, account, event_data)
+                    color = RED if ntype == "full" else YELLOW
+                    shown = (
+                        f"{color}{symbol} {message}{RESET}"
+                        if use_color
+                        else f"{symbol} {message}"
+                    )
+                    print(shown)
 
             if failed_accounts:
                 print()
