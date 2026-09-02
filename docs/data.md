@@ -97,9 +97,8 @@ types (forward compatibility). `timestamp` is unix epoch seconds (int).
     }
 
 ccpace additions are additive only (`source`); it never renames or
-re-nests statusline fields. `cached` responses (served from the
-100%-cap cache) are NOT logged — the log records observations, not
-echoes.
+re-nests statusline fields. Terminal weekly snapshots and idle responses
+served from cache are NOT logged — the log records observations, not echoes.
 
 ### type: "session_start" / "session_end" — statusline's markers
 
@@ -203,7 +202,11 @@ Defaults chosen so a fleet of watchers stays invisible to the API:
 
 - usage poll: 900 s default, minimum 60 s enforced, ±10% jitter per
   cycle (fleet watchers must not synchronize).
-- accounts at 100%: no polling until the earliest reset (cap cache).
+- A 5h or model-scoped cap never suppresses polling: lower-priority service
+  or another model can still move the account.
+- An aggregate 7d cap with no paid path is terminal until its own reset.
+  The in-memory snapshot yields to `r` and to any newer `usage.cache`
+  published by statusline, so the optimization never hides fresh evidence.
 - any fetch failure (429, 5xx, transport): show the last cache badged
   stale, retry on the next tick. With nothing to show at all: doubling
   backoff from 60 s, stretched to `Retry-After` when sent, never past

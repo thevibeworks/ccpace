@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]"]
 # ///
-# Version: 0.7.0
+# Version: 0.8.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -78,7 +78,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -3167,6 +3167,29 @@ def get_max_utilization(data: dict, include_model_specific: bool = False) -> int
     return max(five_util, seven_util)
 
 
+def account_is_terminal(data: dict) -> bool:
+    """Can this account's usage payload remain unchanged until the 7d reset?
+
+    A 5h cap is bypassable when Claude Code offers lower-priority service,
+    and a scoped cap still leaves other models. Neither is immutable account
+    state. Only the aggregate weekly pool stops every included path, and even
+    that is not terminal while paid usage can carry requests beyond it.
+    """
+    seven = data.get("seven_day") or {}
+    weekly_spent = int(seven.get("utilization", 0) or 0) >= 100
+    extra = data.get("extra_usage") or {}
+    spend = data.get("spend") or {}
+    paid_path = extra.get("is_enabled") is True or spend.get("enabled") is True
+    return weekly_spent and not paid_path
+
+
+def terminal_reset(data: dict) -> datetime | None:
+    """The wall that can make account_is_terminal true."""
+    value = (data.get("seven_day") or {}).get("resets_at")
+    dt = parse_reset_dt(value)
+    return dt if dt and dt > datetime.now(timezone.utc) else None
+
+
 def get_earliest_reset(data: dict) -> datetime | None:
     """Earliest upcoming reset across every window that can bind the account.
 
@@ -3259,20 +3282,15 @@ def idle_usage(alias: str) -> dict | None:
 def fetch_or_use_cache(
     label: str,
     cred_path: Path,
-    cached_full_accounts: dict,
+    terminal_accounts: dict,
     credential_tokens: dict,
     now: datetime,
     trace: bool,
 ) -> tuple[dict | None, bool, int]:
     """Fetch usage data or use cache. Returns (data, used_cache, exit_code)."""
-    if label in cached_full_accounts:
-        cached_data, cached_reset = cached_full_accounts[label]
-        if cached_reset is not None and now < cached_reset:
-            LOGGER.debug("%s: cached", label)
-            return cached_data, True, EXIT_OK
-
-        LOGGER.debug("%s: reset reached, refreshing", label)
-        del cached_full_accounts[label]
+    alias = get_alias_from_label(label)
+    if cached := terminal_cached_usage(label, alias, terminal_accounts, now):
+        return cached, True, EXIT_OK
 
     refreshed_token = refresh_token_if_needed(cred_path)
     if refreshed_token:
@@ -3290,7 +3308,6 @@ def fetch_or_use_cache(
         LOGGER.warning("%s: no valid token", label)
         return None, False, EXIT_RUNTIME
 
-    alias = get_alias_from_label(label)
     state, pooled = pooled_usage(alias)
     if state == "fresh":
         LAST_FETCH_AT[label] = float(pooled.get("fetched_at") or datetime.now(timezone.utc).timestamp())
@@ -3316,9 +3333,9 @@ LAST_RESET: dict[str, datetime | None] = {}
 FORCE_FETCH: set[str] = set()  # labels whose next cycle must ask (r pressed)
 
 
-async def fetch_all_with_cache_async(
+async def fetch_all_watch_async(
     credentials: list[tuple[Path, str]],
-    cached_full_accounts: dict,
+    terminal_accounts: dict,
     credential_tokens: dict,
     now: datetime,
     trace: bool,
@@ -3329,16 +3346,10 @@ async def fetch_all_with_cache_async(
     async with httpx.AsyncClient(limits=HTTP_LIMITS, timeout=HTTP_TIMEOUT) as client:
         for cred_path, _ in credentials:
             label = str(cred_path)
-
-            # Check cache first
-            if label in cached_full_accounts:
-                cached_data, cached_reset = cached_full_accounts[label]
-                if cached_reset is not None and now < cached_reset:
-                    LOGGER.debug("%s: cached", label)
-                    results[label] = (cached_data, True, EXIT_OK)
-                    continue
-                LOGGER.debug("%s: reset reached, refreshing", label)
-                del cached_full_accounts[label]
+            alias = get_alias_from_label(label)
+            if cached := terminal_cached_usage(label, alias, terminal_accounts, now):
+                results[label] = (cached, True, EXIT_OK)
+                continue
 
             # Refresh token if needed (sync - local file operation)
             refreshed_token = refresh_token_if_needed(cred_path)
@@ -3356,7 +3367,6 @@ async def fetch_all_with_cache_async(
                 LOGGER.warning("%s: no valid token", label)
                 continue
 
-            alias = get_alias_from_label(label)
             state, pooled = pooled_usage(alias)
             if state == "fresh":
                 LAST_FETCH_AT[label] = float(pooled.get("fetched_at") or datetime.now(timezone.utc).timestamp())
@@ -3864,8 +3874,8 @@ def log_usage_jsonl(
 
     The shape is claude-code-statusline's record — typed, epoch
     timestamp, raw API sections verbatim — so both tools share one
-    history. Cached (100%-cap) responses are not logged: the log
-    records observations, not echoes.
+    history. Terminal weekly snapshots and idle responses are not logged:
+    the log records observations, not echoes.
     """
     if cached or usage.get("_from_shared_cache"):
         return
@@ -3916,25 +3926,65 @@ def log_usage_jsonl(
         LOGGER.debug("failed to write usage log: %s", e)
 
 
-def update_cache(
+def terminal_cached_usage(
     label: str,
-    max_util: int,
+    alias: str,
+    terminal_accounts: dict,
+    now: datetime,
+) -> dict | None:
+    """A terminal snapshot, unless the human or a cooperating writer moved it.
+
+    Manual refresh always evicts the snapshot. Before serving it, read the
+    shared pool at any age: statusline may have published a newer response
+    after paid usage was enabled or a support-side reset changed the account.
+    An optimization may skip a request; it may never hide newer evidence.
+    """
+    if label not in terminal_accounts:
+        return None
+    if label in FORCE_FETCH:
+        terminal_accounts.pop(label, None)
+        return None
+
+    cached_data, cached_reset = terminal_accounts[label]
+    shared = read_shared_usage_cache(alias, max_age=None)
+    cached_at = int(cached_data.get("fetched_at", 0) or 0)
+    shared_at = int((shared or {}).get("fetched_at", 0) or 0)
+    if shared and shared_at > cached_at:
+        if account_is_terminal(shared):
+            terminal_accounts[label] = (shared, terminal_reset(shared))
+        else:
+            terminal_accounts.pop(label, None)
+        LAST_FETCH_AT[label] = float(shared_at)
+        LAST_RESET[label] = get_earliest_reset(shared)
+        LOGGER.debug("%s: newer shared cache replaced terminal snapshot", label)
+        return shared
+
+    if cached_reset is not None and now < cached_reset:
+        LOGGER.debug("%s: weekly pool terminal until reset", label)
+        return cached_data
+
+    LOGGER.debug("%s: terminal reset reached, refreshing", label)
+    terminal_accounts.pop(label, None)
+    return None
+
+
+def update_terminal_cache(
+    label: str,
     data: dict,
-    cached_full_accounts: dict,
+    terminal_accounts: dict,
 ) -> None:
-    """Update cache for accounts at 100%."""
-    if max_util < 100:
-        if label in cached_full_accounts:
-            del cached_full_accounts[label]
-    else:
-        reset_time = get_earliest_reset(data)
-        cached_full_accounts[label] = (data, reset_time)
-        if reset_time:
-            LOGGER.debug(
-                "%s: cached until %s",
-                label,
-                reset_time.astimezone().strftime("%m/%d %H:%M:%S"),
-            )
+    """Cache only an aggregate weekly wall with no paid path around it."""
+    if not account_is_terminal(data):
+        terminal_accounts.pop(label, None)
+        return
+    reset_time = terminal_reset(data)
+    if reset_time:
+        terminal_accounts[label] = (data, reset_time)
+        LOGGER.debug(
+            "%s: weekly pool terminal until %s",
+            label,
+            reset_time.astimezone().strftime("%m/%d %H:%M:%S"),
+        )
 
 
 def jittered(interval: int) -> int:
@@ -4015,10 +4065,10 @@ def countdown_sleep(
 
 
 def print_watch_footer(
-    all_full: bool,
+    all_terminal: bool,
     earliest_global_reset: datetime | None,
     earliest_reset_account: str | None,
-    cached_count: int,
+    terminal_count: int,
     total_count: int,
     interval: int,
     notifier: str | None,
@@ -4037,23 +4087,23 @@ def print_watch_footer(
     print()
 
     now = datetime.now(timezone.utc)
-    if cached_count > 0:
+    if terminal_count > 0:
         if use_color:
             print(
-                f"{DIM}Cached: {cached_count}/{total_count} at 100% (no API polling){RESET}"
+                f"{DIM}Weekly cap: {terminal_count}/{total_count} without a paid path{RESET}"
             )
         else:
-            print(f"Cached: {cached_count}/{total_count} at 100% (no API polling)")
+            print(f"Weekly cap: {terminal_count}/{total_count} without a paid path")
 
-    if all_full and earliest_global_reset:
+    if all_terminal and earliest_global_reset:
         remaining = int((earliest_global_reset - now).total_seconds())
         reset_local = format_multi_tz(earliest_global_reset)
 
         symbol = "⏳" if supports_unicode() else "~"
         if use_color:
-            print(f"{YELLOW}{symbol} All quotas full. Next reset: {reset_local}{RESET}")
+            print(f"{YELLOW}{symbol} All weekly pools spent. Next reset: {reset_local}{RESET}")
         else:
-            print(f"{symbol} All quotas full. Next reset: {reset_local}")
+            print(f"{symbol} All weekly pools spent. Next reset: {reset_local}")
 
         sleep_time = min(WAIT_MODE_CHECK_INTERVAL, remaining)
         status = countdown_sleep(
@@ -4120,7 +4170,7 @@ def info_usage_watch(
     notified_threshold = {}
     notified_full = {}
     notified_pace = {}
-    cached_full_accounts = {}
+    terminal_accounts = {}
     credential_tokens = {str(path): token for path, token in credentials}
     previous_data = {}
     fail_backoff = 0  # exponential, resets on any successful cycle
@@ -4175,7 +4225,8 @@ def info_usage_watch(
                 move_cursor_home()
 
             now = datetime.now(timezone.utc)
-            all_full = True
+            all_terminal = True
+            terminal_count = 0
             earliest_global_reset = None
             earliest_reset_account = None
             success_count = 0
@@ -4194,9 +4245,9 @@ def info_usage_watch(
             # Fetch all credentials concurrently
             if len(credentials) > 1:
                 fetch_results = asyncio.run(
-                    fetch_all_with_cache_async(
+                    fetch_all_watch_async(
                         credentials,
-                        cached_full_accounts,
+                        terminal_accounts,
                         credential_tokens,
                         now,
                         trace,
@@ -4209,7 +4260,7 @@ def info_usage_watch(
                 data, used_cache, code = fetch_or_use_cache(
                     label,
                     cred_path,
-                    cached_full_accounts,
+                    terminal_accounts,
                     credential_tokens,
                     now,
                     trace,
@@ -4223,10 +4274,12 @@ def info_usage_watch(
                 data, used_cache, code = fetch_results.get(label, (None, False, EXIT_RUNTIME))
 
                 if code != EXIT_OK:
+                    all_terminal = False
                     failed_accounts.append(display_alias(label))
                     continue
 
                 if not data:
+                    all_terminal = False
                     continue
 
                 success_count += 1
@@ -4247,15 +4300,16 @@ def info_usage_watch(
                 if not used_cache:
                     previous_data[label] = data
 
-                # include model-scoped limits: an account blocked on the
-                # fable/opus weekly is full even when 5h/7d-all sit low, and
-                # must be cached + reset-watched like any other full window.
+                # Threshold/full notices are limit-specific. Terminal ACCOUNT
+                # state is narrower: only the aggregate week with no paid path
+                # can make the whole payload immutable until reset.
                 max_util = get_max_utilization(data, include_model_specific=True)
-
-                if max_util < 100:
-                    all_full = False
-
-                update_cache(label, max_util, data, cached_full_accounts)
+                terminal = account_is_terminal(data)
+                if terminal:
+                    terminal_count += 1
+                else:
+                    all_terminal = False
+                update_terminal_cache(label, data, terminal_accounts)
 
                 msgs = handle_notifications(
                     label,
@@ -4275,7 +4329,7 @@ def info_usage_watch(
                         label, data, notified_pace, notifier, profile
                     )
 
-                reset_time = get_earliest_reset(data)
+                reset_time = terminal_reset(data) if terminal else get_earliest_reset(data)
                 if reset_time and (
                     not earliest_global_reset or reset_time < earliest_global_reset
                 ):
@@ -4304,8 +4358,8 @@ def info_usage_watch(
                 else:
                     print(f"{symbol} Failed: {failed_str}")
 
-            if success_count == 0 and len(cached_full_accounts) == 0:
-                # Nothing to show and nothing cached: doubling local backoff
+            if success_count == 0:
+                # Nothing to show: doubling local backoff
                 # from BACKOFF_BASE_SEC, stretched to a Retry-After when the
                 # API sent one, but never past the poll interval — the next
                 # tick is the retry, and one request per tick cannot hurt.
@@ -4330,10 +4384,10 @@ def info_usage_watch(
             fail_backoff = 0
 
             footer_status = print_watch_footer(
-                all_full,
+                all_terminal,
                 earliest_global_reset,
                 earliest_reset_account,
-                len(cached_full_accounts),
+                terminal_count,
                 len(credentials),
                 jittered(interval),
                 notifier,

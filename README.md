@@ -130,6 +130,10 @@ writing; `CCPACE_DATA_DIR` relocates the store.
   is the ceiling. A failed fetch keeps the last good numbers on screen,
   badged `(stale 12m · !429)`, and the next poll is the retry — nothing
   is locked out.
+- A 5h or model-scoped cap does not freeze the account: lower-priority
+  service or another model can still move 7d. Only an exhausted aggregate
+  week with no paid path is cached to its reset, and both `r` and a newer
+  shared statusline cache break that optimization.
 - The grammar — rows, ledger, provenance, requests — is one page:
   [DESIGN.md](DESIGN.md).
 - Forecasts are your own history extrapolated, not a promise. Below two

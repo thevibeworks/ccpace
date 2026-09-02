@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — name the wall
+## v0.8.0 — name the wall (2026-09-02)
 
 Claude Code can now offer `/low-priority` at a spent 5h session window, but
 the gated offer, active mode, and separate allowance do not exist in
@@ -15,6 +15,16 @@ to say `0%`; the payload now has canonical `window`, `utilization`,
 `reset_at`, and `reset_time` fields while retaining the old aliases for
 custom hooks. Custom-notifier envelopes also gain a stable event `id`, such
 as `full:work:5h:<reset>`, for dedupe and tracing across restarts.
+
+The old watch cache used the maximum of every counter as an account-level
+stop: 5h at 100, or one scoped model at 100, froze the whole account until a
+reset. That is false once lower-priority service can bypass 5h, and it was
+already false for another model. Worse, the early return ignored a newer
+shared cache from statusline and even `r`. The cache is now reserved for
+one genuinely terminal state — aggregate 7d spent with no paid path — and
+both newer shared evidence and manual refresh evict it.
+
+85 tests.
 
 ## v0.7.0 — a guess may not delete a window (2026-09-01)
 

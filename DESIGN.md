@@ -130,10 +130,11 @@ climbs inside one window remain two events.
 
 ## Provenance on the rule
 
-`(cached)` frozen at 100% until reset · `(stale 12m · !429)` last fetch
-failed, numbers this old · `(idle 12m)` Claude Code did nothing since,
-so nothing was asked. Never a blank block: the last cache beats an empty
-frame.
+`(cached)` the aggregate weekly pool is spent and no paid path exists,
+so this payload cannot move before its 7d reset · `(stale 12m · !429)`
+last fetch failed, numbers this old · `(idle 12m)` Claude Code did nothing
+since, so nothing was asked. A manual refresh or a newer shared cache always
+breaks `(cached)`. Never a blank block: the last cache beats an empty frame.
 
 ## Requests
 
@@ -145,6 +146,10 @@ Ask only when the answer can have changed.
   container sharing `~/.claude`) → no request; `r` overrides.
 - Reset boundaries wake the loop; the poll interval (15 min ± 10%) is the
   ceiling, not the metronome.
+- A 5h or model-scoped cap never freezes the account: lower-priority service
+  or another model can keep moving the weekly counters.
+- Only 7d at cap with no paid path is terminal until reset. Even then, `r`
+  and a newer cache from statusline take precedence over the optimization.
 - Failure: last cache + badge, retry next tick; never a lockout, never
   `usage.err` (that file is the statusline's).
 - Profile 24 h (tier comes from the credentials file); prepaid 1 h and
