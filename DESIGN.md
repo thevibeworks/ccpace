@@ -111,12 +111,30 @@ the DATE, and the `!` row is where it goes. Two lines describing one week
 with two numbers is not more information; it is an argument the reader has
 to settle.
 
+A 5h cap is not a weekly cap. Its quota row says `cap`, never the occasional
+endpoint value `101%`; the reset is the useful fact once the counter binds.
+The wall row keeps the weekly pool beside it: `5h capped · 47% of 7d left · back
+@Tue 2 04:00`. Claude Code may offer `/low-priority` there, but that gated
+offer and its allowance are absent from `/api/oauth/usage`; this surface
+states the two counters it can prove and does not impersonate session state.
+
+## Notifications
+
+The watch surface and its side channels share one vocabulary. Every event
+payload names `window`, `utilization`, `reset_at`, and the display-safe
+`reset_time`; producers do not invent aliases that formatters have to guess.
+The envelope adds a stable, readable `id` (`full:work:5h:<reset>`), so a
+custom notifier can dedupe or trace one condition across process restarts.
+Threshold and delta IDs add the utilization that caused the event; two real
+climbs inside one window remain two events.
+
 ## Provenance on the rule
 
-`(cached)` frozen at 100% until reset · `(stale 12m · !429)` last fetch
-failed, numbers this old · `(idle 12m)` Claude Code did nothing since,
-so nothing was asked. Never a blank block: the last cache beats an empty
-frame.
+`(cached)` the aggregate weekly pool is spent and no paid path exists,
+so this payload cannot move before its 7d reset · `(stale 12m · !429)`
+last fetch failed, numbers this old · `(idle 12m)` Claude Code did nothing
+since, so nothing was asked. A manual refresh or a newer shared cache always
+breaks `(cached)`. Never a blank block: the last cache beats an empty frame.
 
 ## Requests
 
@@ -128,6 +146,10 @@ Ask only when the answer can have changed.
   container sharing `~/.claude`) → no request; `r` overrides.
 - Reset boundaries wake the loop; the poll interval (15 min ± 10%) is the
   ceiling, not the metronome.
+- A 5h or model-scoped cap never freezes the account: lower-priority service
+  or another model can keep moving the weekly counters.
+- Only 7d at cap with no paid path is terminal until reset. Even then, `r`
+  and a newer cache from statusline take precedence over the optimization.
 - Failure: last cache + badge, retry next tick; never a lockout, never
   `usage.err` (that file is the statusline's).
 - Profile 24 h (tier comes from the credentials file); prepaid 1 h and

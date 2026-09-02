@@ -73,6 +73,12 @@ sorted by tier.
 - Budget math truncates at the subscription period end (derived from
   the billing anniversary — the API exposes no cancel/renew date, so
   the boundary is assumed and marked with `~`).
+- A spent 5h window is named separately from the week behind it:
+  `5h capped · 47% of 7d left · back @Tue 2 04:00`. Current Claude Code
+  may offer `/low-priority` at that wall, but eligibility and its separate
+  allowance travel with the session request, not `/api/oauth/usage`.
+  ccpace therefore reports the proven wall and weekly headroom without
+  claiming the mode is available for an account it cannot see into.
 
 ## Notifications
 
@@ -85,6 +91,11 @@ ccpace --watch --bark https://api.day.app/YOUR_KEY
 ccpace --watch --bark                        # bark CLI env: BARK_KEY on BARK_SERVER
 ccpace --watch --notifier ~/bin/my-hook.sh   # JSON on stdin
 ```
+
+Custom notifier payloads carry a stable, inspectable `id` plus canonical
+`window`, `utilization`, `reset_at`, and `reset_time` fields in `data`.
+For example, `full:work:5h:2026-09-02T11:00:00+00:00` identifies one
+condition across custom-notifier restarts.
 
 Env: `CCPACE_NTFY`, `CCPACE_BARK`, `CCPACE_NOTIFIER`, `CCPACE_INTERVAL`,
 `CCPACE_THRESHOLD`, `CCPACE_TZ` (e.g. `America/New_York,Asia/Tokyo`).
@@ -119,6 +130,10 @@ writing; `CCPACE_DATA_DIR` relocates the store.
   is the ceiling. A failed fetch keeps the last good numbers on screen,
   badged `(stale 12m · !429)`, and the next poll is the retry — nothing
   is locked out.
+- A 5h or model-scoped cap does not freeze the account: lower-priority
+  service or another model can still move 7d. Only an exhausted aggregate
+  week with no paid path is cached to its reset, and both `r` and a newer
+  shared statusline cache break that optimization.
 - The grammar — rows, ledger, provenance, requests — is one page:
   [DESIGN.md](DESIGN.md).
 - Forecasts are your own history extrapolated, not a promise. Below two
