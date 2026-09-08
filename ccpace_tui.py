@@ -654,7 +654,8 @@ class CalendarApp(App):
             )
 
     def draw_detail(self):
-        if not self.snapshots:
+        # A queued highlight can arrive after the screen's children detach.
+        if not self.snapshots or not self.query("#table"):
             return
         table = self.query_one("#table", DataTable)
         now, snapshot = self.source.now, self.snapshot

@@ -343,6 +343,18 @@ def test_day_inspector_keeps_dst_fold(utc_tz, monkeypatch):
     asyncio.run(run())
 
 
+def test_queued_highlight_after_table_detaches(utc_tz):
+    async def run():
+        app = CalendarApp(DemoSource())
+        async with app.run_test(size=(100, 36)) as pilot:
+            await loaded(app, pilot)
+            app.draw_table()
+            await app.query_one("#table", DataTable).remove()
+            app.draw_detail()
+            await pilot.pause()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("scenario", SCENARIOS)
 def test_demo_scenarios_render_without_live_effects(scenario, store, monkeypatch):
     monkeypatch.setattr(
