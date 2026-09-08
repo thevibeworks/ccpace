@@ -1,8 +1,8 @@
 {
   "name": "ccpace",
   "displayName": "ccpace",
-  "description": "Pace your Claude quota: multi-account usage monitor, countable 5h-window budget, weekday forecasts, push notifications",
-  "version": "0.2.0",
+  "description": "Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal",
+  "version": "0.9.0",
   "author": { "name": "thevibeworks" },
   "homepage": "https://thevibeworks.github.io/ccpace/",
   "repository": "https://github.com/thevibeworks/ccpace",

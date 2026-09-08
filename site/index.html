@@ -1,188 +1,79 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ccpace — pace your Claude quota</title>
-<meta name="description" content="Multi-account usage monitor for Claude subscriptions: real utilization from the official usage endpoint, a countable 5h-window budget, weekday forecasts from your own history, push notifications.">
-<link rel="canonical" href="https://thevibeworks.github.io/ccpace/">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
-<script>try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}</script>
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "ccpace",
-  "applicationCategory": "DeveloperApplication",
-  "operatingSystem": "macOS, Linux",
-  "description": "Multi-account usage monitor for Claude subscriptions: real utilization, countable 5h-window budget, weekday forecasts, push notifications.",
-  "url": "https://thevibeworks.github.io/ccpace/",
-  "codeRepository": "https://github.com/thevibeworks/ccpace",
-  "programmingLanguage": "Python",
-  "license": "https://opensource.org/licenses/MIT"
-}
-</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ccpace | Claude usage calendar</title>
+  <meta name="description" content="Claude usage calendar for your terminal. Watch 5h and weekly limits together, browse history, and forecast remaining capacity. Try the demo without an account.">
+  <link rel="canonical" href="https://thevibeworks.github.io/ccpace/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <meta property="og:title" content="ccpace | Claude usage calendar">
+  <meta property="og:description" content="Short-window pressure. Weekly headroom. One calendar.">
+  <meta property="og:image" content="https://thevibeworks.github.io/ccpace/assets/calendar-120.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"ccpace","softwareVersion":"0.9.0","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal","url":"https://thevibeworks.github.io/ccpace/","downloadUrl":"https://pypi.org/project/ccpace/","license":"https://opensource.org/licenses/MIT"}</script>
 </head>
 <body>
-
-<header class="masthead">
-  <div class="wrap">
-    <a class="brand" href="https://thevibeworks.github.io/">
-      <span class="caret">&gt;</span><span class="org">thevibeworks/</span><span class="name">ccpace</span>
-    </a>
-    <nav class="sitenav" aria-label="Sections">
-      <a href="#demo">demo</a>
-      <a href="#install">install</a>
-      <a href="#pacing">pacing</a>
-      <a href="#caveats">caveats</a>
-      <a href="https://github.com/thevibeworks/ccpace">github ↗</a>
+  <header class="wrap masthead">
+    <a class="brand" href="./">ccpace<span class="brand-mark" aria-hidden="true">.</span></a>
+    <nav aria-label="Main navigation">
+      <a href="#install">Install</a>
+      <a href="https://github.com/thevibeworks/ccpace#calendar">Docs</a>
+      <a href="https://github.com/thevibeworks/ccpace">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
-    <button id="theme-toggle" hidden>theme: <span class="val">auto</span></button>
-  </div>
-</header>
+  </header>
+  <main>
+    <section class="intro wrap">
+      <p class="release"><a href="https://github.com/thevibeworks/ccpace/releases/tag/v0.9.0">v0.9.0 / Usage calendar</a></p>
+      <h1>ccpace</h1>
+      <p class="lead">Your Claude usage, across the week.</p>
+      <p class="summary">A 5h limit can run out while the weekly pool goes unused.
+        See both in one terminal calendar, with history, forecasts, and alerts.</p>
+      <div class="quick-start"><code>uvx ccpace --calendar --demo</code><button class="copy" type="button" aria-label="Copy demo command" title="Copy demo command" data-copy="uvx ccpace --calendar --demo"><img src="assets/copy.svg" width="18" height="18" alt=""></button><span id="copy-status" role="status"></span></div>
+      <p class="caption">No account needed for the demo. macOS + Linux.</p>
+    </section>
+    <section class="preview wrap" aria-label="Calendar preview">
+      <div class="preview-heading">
+        <span>THE WEEK AT A GLANCE</span>
+        <fieldset><legend>Palette</legend>
+          <label><input type="radio" name="palette" value="spectrum" checked><span class="swatch spectrum"></span>Spectrum</label>
+          <label><input type="radio" name="palette" value="quiet"><span class="swatch quiet"></span>Quiet</label>
+          <label><input type="radio" name="palette" value="paper"><span class="swatch paper"></span>Paper</label>
+        </fieldset>
+      </div>
+      <picture id="calendar-picture">
+        <source media="(max-width: 560px)" srcset="assets/calendar-50.png">
+        <img id="calendar-image" src="assets/calendar-120.png" width="1482" height="928" alt="ccpace calendar: 5h allowance 88% used, with about 39% of the weekly pool projected unused. Synthetic demo.">
+      </picture>
+      <p class="caption">Synthetic usage, rendered by ccpace. The amber line is 5h pressure; the weekly forecast remains visible beneath it.</p>
+    </section>
+    <section class="features wrap" aria-label="What the calendar shows">
+      <article><span class="index">01 / NOW</span><h2>Which limit comes next?</h2><p>5h, weekly, and model-scoped allowances stay separate. Each shows its usage and reset time, even while you inspect history.</p></article>
+      <article><span class="index">02 / HISTORY</span><h2>Where did the week go?</h2><p>Browse interval totals and hourly patterns. Select a day for the underlying observations. Missing history stays blank.</p></article>
+      <article><span class="index">03 / AHEAD</span><h2>How much will remain?</h2><p>Forecasts learn from your own weekday and hourly usage. Alerts can go to your terminal, phone, or a JSON notification hook.</p></article>
+    </section>
+    <section id="install" class="install wrap">
+      <div><p class="index">GET STARTED</p><h2>Open your calendar.</h2><p>Install <a href="https://docs.astral.sh/uv/">uv</a>, then run the demo. For live usage, sign into Claude Code first.</p></div>
+      <pre><code><span class="comment"># Synthetic demo, no credentials</span>
+uvx ccpace --calendar --demo
 
-<main class="wrap">
+<span class="comment"># Your Claude accounts</span>
+uvx ccpace --calendar
 
-<section class="hero">
-  <h1>Pace your Claude quota.</h1>
-  <p class="tagline">Your subscription is a <strong>5-hour window</strong> and a
-  <strong>weekly budget</strong>. ccpace watches both, for every account you
-  have, from the official usage endpoint — <strong>real percentages, not
-  transcript estimates</strong> — and tells you whether your pace survives
-  the week.</p>
-  <ul class="badges">
-    <li>single file</li>
-    <li>multi-account</li>
-    <li>read-only</li>
-    <li>ntfy · bark · system notify</li>
-    <li>Claude Code plugin</li>
-    <li>MIT</li>
-  </ul>
-</section>
-
-<section id="demo">
-  <h2>watch mode</h2>
-  <div class="term">
-    <div class="term-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="title">ccpace --watch</span>
-    </div>
-    <pre></pre>
-  </div>
-  <p class="legend">Hover the ledger strip — each cell is one real 5h window.
-  <code>▁▂▃▄▅▆▇█</code> what a window burned · <code>·</code> idle ·
-  <code>░</code> unknown · <code>▮</code> now · <code>▫</code> ahead ·
-  <code>×</code> won't be covered at this pace · <code>┤</code> access ends.
-  Count <code>▮</code> and what follows: that <em>is</em> the budget number.</p>
-</section>
-
-<section id="install">
-  <h2>install</h2>
-  <div class="term">
-    <div class="term-bar">
-      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-      <span class="title">sh</span>
-    </div>
-    <pre><span class="c"># needs uv and a Claude login (~/.claude/.credentials*.json)</span>
-<span class="p">$</span> uvx ccpace                <span class="c"># one glance, all accounts</span>
-<span class="p">$</span> uvx ccpace <span class="k">--watch</span>        <span class="c"># live TUI: r=refresh, q=quit</span>
-<span class="p">$</span> uvx ccpace <span class="k">--watch</span> <span class="k">--ntfy</span> https://ntfy.sh/mytopic
-
-<span class="c"># or the single file — it is the whole tool</span>
-<span class="p">$</span> curl -fsSLO https://raw.githubusercontent.com/thevibeworks/ccpace/main/ccpace.py
-<span class="p">$</span> uv run --script ccpace.py
-
-<span class="c"># as a Claude Code plugin (/ccpace in any session)</span>
-<span class="p">$</span> /plugin marketplace add thevibeworks/ccpace
-<span class="p">$</span> /plugin install ccpace@ccpace</pre>
-  </div>
-</section>
-
-<section id="pacing">
-  <h2>how pacing works</h2>
-  <ul class="grid">
-    <li class="card">
-      <h3>The window model</h3>
-      <p>Anthropic meters a rolling 5h session window and a 7d pool.
-      ccpace derives what the API doesn't say: window start
-      (<code>reset − length</code>), elapsed fraction, and pace =
-      usage% / elapsed%. Pace &gt; 1 means you cap before the reset;
-      the advisor names the hour.</p>
-    </li>
-    <li class="card">
-      <h3>The countable budget</h3>
-      <p>The 7d period is 34 windows of 5h. Windows you cannot spend are
-      not budget: the strip ends at <code>┤</code> when your subscription
-      period ends before the reset. What's left is a number you can act
-      on — <code>%/window stays even</code>.</p>
-    </li>
-    <li class="card">
-      <h3>Forecasts from your history</h3>
-      <p>Every sample appends to a local JSONL store (shared with
-      <a href="https://github.com/thevibeworks/claude-code-statusline">claude-code-statusline</a>).
-      ccpace learns your weekday burn signature (EWMA, 14-day half-life)
-      and projects where the week lands. Under 3 days of history it says
-      nothing rather than guessing.</p>
-    </li>
-  </ul>
-</section>
-
-<section id="caveats">
-  <h2>what it does not do</h2>
-  <ul>
-    <li>No inference, no writes to your account. One exception, stated
-    plainly: expired tokens are refreshed via the official OAuth flow and
-    written back to the credentials file — the same thing Claude Code does.</li>
-    <li>No guarantees: it reads the same undocumented endpoints the
-    Claude Code CLI uses. Anthropic can change them any release.</li>
-    <li>No cost invoices: percentages of your quota, not dollars.</li>
-    <li>No cloud: samples stay in <code>~/.claude/statusline/</code> on
-    your machine. Notifications go only where you point them.</li>
-    <li>Not affiliated with Anthropic.</li>
-  </ul>
-</section>
-
-</main>
-
-<footer>
-  <div class="wrap">
-    <a href="https://github.com/thevibeworks/ccpace">source</a>
-    <a href="https://github.com/thevibeworks/ccpace/blob/main/LICENSE">MIT</a>
-    <a href="llms.txt">llms.txt</a>
-    <a href="https://thevibeworks.github.io/">thevibeworks</a>
-    <span class="disclaimer">unofficial — not affiliated with Anthropic.
-    Claude is a trademark of Anthropic, PBC.</span>
-  </div>
-</footer>
-
-<script>
-(function () {
-  var b = document.getElementById('theme-toggle');
-  if (!b) return;
-  var order = ['auto', 'light', 'dark'];
-  var read = function () {
-    try { return localStorage.getItem('theme') || 'auto'; } catch (e) { return 'auto'; }
-  };
-  var paint = function (v) {
-    if (v === 'auto') delete document.documentElement.dataset.theme;
-    else document.documentElement.dataset.theme = v;
-    b.querySelector('.val').textContent = v;
-    b.setAttribute('aria-label', 'Theme: ' + v + '. Click to change.');
-  };
-  b.hidden = false;
-  paint(read());
-  b.addEventListener('click', function () {
-    var next = order[(order.indexOf(read()) + 1) % order.length];
-    try { localStorage.setItem('theme', next); } catch (e) {}
-    paint(next);
-  });
-})();
-</script>
-<script src="frames.js" defer></script>
-<script src="demo.js" defer></script>
+<span class="comment"># A compact view, anytime</span>
+uvx ccpace</code></pre>
+      <p class="install-links"><a href="https://pypi.org/project/ccpace/">PyPI package ↗</a><a href="https://github.com/thevibeworks/ccpace#claude-code-plugin">Claude Code plugin ↗</a></p>
+    </section>
+    <section class="limits wrap">
+      <h2>Measured usage. Estimated forecasts.</h2>
+      <p>Usage comes from the OAuth endpoints Claude Code uses. History and caches are shared with <a href="https://github.com/thevibeworks/claude-code-statusline">claude-code-statusline</a> on your machine. Forecasts use that history; they are not promises of available capacity.</p>
+      <p>ccpace watches and warns. It does not control agent execution. Provider endpoints can change. Expired OAuth tokens are refreshed and written back; usage data stays local unless you configure notification destinations.</p>
+      <a href="https://github.com/thevibeworks/ccpace#data-and-limits">Data and limits ↗</a>
+    </section>
+  </main>
+  <footer class="wrap"><span>thevibeworks / ccpace</span><nav aria-label="Project links"><a href="https://github.com/thevibeworks/ccpace/blob/main/LICENSE">MIT</a><a href="llms.txt">For agents</a><a href="https://github.com/thevibeworks/ccpace/releases">Releases</a></nav><p>Unofficial. Not affiliated with Anthropic.</p></footer>
+  <script src="site.js" defer></script>
 </body>
 </html>

@@ -1,12 +1,22 @@
 # ccpace
 
-> Multi-account usage monitor for Claude subscriptions: real utilization
-> from the official usage endpoint, countable 5h-window budget, weekday
-> forecasts from local history, push notifications (ntfy/bark/system).
-> Single-file Python (uv), MIT, by thevibeworks.
+> Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal.
 
-- [README](https://github.com/thevibeworks/ccpace/blob/main/README.md): install, flags, env vars
-- [ccpace.py](https://raw.githubusercontent.com/thevibeworks/ccpace/main/ccpace.py): the whole tool, one file
-- [Data contract](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): store v1 record shapes, shared with claude-code-statusline
-- [Statusline interop](https://github.com/thevibeworks/ccpace/blob/main/docs/statusline-interop.md): shared-store proposal
-- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md)
+Install with `uvx ccpace`. `--calendar --demo` needs no account;
+`--calendar` requires a Claude subscription login and an interactive terminal.
+For an agent tool call, use the one-shot `ccpace` or `ccpace --raw`.
+The calendar watches and warns; it does not steer or pause agents.
+The package includes the collector, calendar model, and Textual UI.
+
+## Docs
+
+- [ccpace](https://github.com/thevibeworks/ccpace/blob/main/README.md): Claude usage calendar for your terminal. See your 5h limit, weekly pool, and model-scoped limits together, with forecasts and history from your own usage.
+- [Usage calendar](https://github.com/thevibeworks/ccpace/blob/main/docs/calendar-tui.md): Available in ccpace 0.9.0 as the opt-in `--calendar` view. All screen values and account labels below are synthetic.
+- [ccpace data contract (store v1)](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): The store is the product's foundation: every forecast, ledger cell, and notification derives from it. This file is the contract; code that disagrees with it is wrong.
+- [DESIGN — ccpace's language](https://github.com/thevibeworks/ccpace/blob/main/DESIGN.md): The opt-in calendar adds a week grid and hourly inspection to this compact grammar. Its interaction and evidence rules are in [Usage calendar](docs/calendar-tui.md). Spectrum uses mint usage, cyan forecasts, and rose model identity; Quiet and Paper keep the same meanings. Warm colors remain pressure signals.
+- [Contributing](https://github.com/thevibeworks/ccpace/blob/main/CONTRIBUTING.md): For a bug, include the ccpace version, operating system, terminal size, command, expected result, and actual result. Use `--calendar --demo` when it reproduces the issue. For a feature, describe the usage decision it would help someone make.
+- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): Your 5h allowance can run out while much of the weekly pool goes unused. `ccpace --calendar` puts both conditions on one screen, with a browsable week, hourly usage patterns, quota-period history, and alerts.
+
+## Optional
+
+- [Full documentation](https://thevibeworks.github.io/ccpace/llms-full.txt): All mapped documentation in one file

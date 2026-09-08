@@ -1,160 +1,174 @@
 # ccpace
 
-Pace your Claude quota. Multi-account usage monitor for Claude
-subscriptions: real utilization from the official usage endpoint — not
-estimates from transcripts — a countable 5h-window budget, weekday
-forecasts learned from your own history, and push notifications.
+Claude usage calendar for your terminal. See your 5h limit, weekly pool,
+and model-scoped limits together, with forecasts and history from your own usage.
 
-```
-── [20x] work · period ends ~Aug 11 ────────────────────────────────
-5h     7% █▒░░░░░░░░  3h 48m   @19:00              0.3x
-7d     3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
-fable  3% █░░░░░░░░░  6d 8h    @Thu 13 00:00       0.3x
-           ▁▁▂▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯┤
-           budget: ~23 windows left · 4.2%/window stays even · period ends ~Aug 11
-```
+[![PyPI](https://img.shields.io/pypi/v/ccpace)](https://pypi.org/project/ccpace/)
+[![Tests](https://github.com/thevibeworks/ccpace/actions/workflows/check.yml/badge.svg)](https://github.com/thevibeworks/ccpace/actions/workflows/check.yml)
+[![MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## Install
+[Website](https://thevibeworks.github.io/ccpace/) · [Install](#start) ·
+[Calendar](#calendar) · [Data contract](docs/data.md) · [Changelog](CHANGELOG.md) ·
+[For agents](llms.txt)
+
+![ccpace usage calendar in Spectrum](https://raw.githubusercontent.com/thevibeworks/ccpace/main/docs/calendar-previews/calendar-120.png)
+
+Synthetic demo: the 5h allowance is 88% used while the weekly forecast
+leaves about 39% unused. The calendar keeps both conditions visible.
+Run the same scenario with `uvx ccpace --calendar --demo`.
+
+## Start
+
+Requires [uv](https://docs.astral.sh/uv/), macOS or Linux, and a terminal.
+Python 3.11 or later is resolved by uv.
 
 ```sh
-uvx ccpace                 # one glance, all discovered accounts
-uvx ccpace --watch         # live TUI: r=refresh, q=quit
+uvx ccpace --calendar --demo   # try it without a Claude account
+uvx ccpace --calendar          # your accounts, after claude login
+uvx ccpace                    # compact one-shot view
+uvx ccpace --watch            # compact watch view
 ```
 
-Or grab the single file — it is the whole tool:
+Upgrade an existing uv installation with `uv tool upgrade ccpace`, or run
+`uvx --refresh ccpace --calendar`. The calendar is opt-in.
+
+Claude Code credentials are discovered from `~/.claude/.credentials*.json`.
+Both `.credentials.work.json` and `work.credentials.json` name an account;
+`-f PATH` selects explicit credential files. A subscription login is needed
+for live usage. API-key billing and Codex collection are not supported.
+
+## Calendar
+
+- **Current limits stay visible.** 5h, aggregate 7d, and scoped weekly
+  allowances are separate counters with their own reset times.
+- **Browse the week.** Interval totals and hourly patterns show where usage
+  accumulated. Enter opens hourly detail; History lists quota periods.
+- **Forecast from your history.** The same model as claude-code-statusline
+  learns weekday and hourly burn. A short history uses a labeled linear
+  fallback; the learned forecast requires at least 14 days of history.
+- **Warnings without execution control.** Alerts record condition changes,
+  and existing notification channels can carry them elsewhere. ccpace never
+  pauses, launches, switches models, or steers an agent.
+
+Unavailable cells stay blank. Selecting one explains whether observations
+are missing, a forecast is unavailable, or the next quota period has yet
+to begin. Observed zero is `0.0`; `+` means a partial observed amount;
+`~` marks a forecast; `|` marks a quota reset. Long gaps are not assigned
+to individual hours, and forecasts end at the current pool or access boundary.
+
+Spectrum uses mint for usage, cyan for forecasts, and rose for model
+identity. Amber and red remain pressure signals. Quiet and Paper are also
+available; `NO_COLOR` is honored.
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/thevibeworks/ccpace/main/ccpace.py
-uv run --script ccpace.py
+ccpace --calendar --theme spectrum
+ccpace --calendar --theme quiet
+ccpace --calendar --theme paper
 ```
 
-As a Claude Code plugin (`/ccpace` inside Claude Code):
+The theme picker and `Ctrl+t` change palettes during a run.
+`CCPACE_THEME` sets the default. Light terminal backgrounds are detected
+through `COLORFGBG` when it is available.
 
+| Action | Key |
+| --- | --- |
+| Select an interval | Arrow keys |
+| Hourly detail / back | Enter / Escape |
+| Previous / next week | `[` / `]` |
+| Today | `t` |
+| Calendar / History / Alerts | `1` / `2` / `3` |
+| Next account / meter | `a` / `m` |
+| Acknowledge selected alert | `x` |
+| Refresh / quit | `r` / `q` |
+
+Mouse selection and scrolling work too. Compact terminals keep the calendar
+and move details below it; narrow terminals use a daily agenda.
+
+Demo scenarios: `mixed`, `weekly`, `scoped`, `stale`, `cold`, `reset`,
+`credits`, `rebase`, and `weekly-only`. `d` cycles scenarios; `r` advances
+the synthetic clock five minutes. Demo mode reads no credentials, makes
+no provider requests, writes no usage or alert state, and sends no notifications.
+
+## Notifications
+
+```sh
+ccpace --calendar --ntfy https://ntfy.sh/your-topic
+ccpace --calendar --bark https://api.day.app/YOUR_KEY
+ccpace --calendar --notifier ./notify-usage.sh
 ```
+
+These options also work with `--watch`. Bare `--bark` uses `BARK_KEY` and
+`BARK_SERVER`. Environment equivalents: `CCPACE_NTFY`, `CCPACE_BARK`,
+`CCPACE_NOTIFIER`, `CCPACE_INTERVAL`, `CCPACE_THRESHOLD`, and `CCPACE_TZ`.
+
+Custom notifiers receive JSON on stdin with `id`, `event`, `account`, and
+`data`. Calendar events add stable condition and transition IDs, provider,
+meter, observation time, and forecast provenance. Forecast notices require
+two distinct observations; cap notices are immediate. A reset clock passing
+does not establish recovery: a fresh observation must confirm it.
+
+Calendar alert state is bounded to 200 events in `calendar-alerts.json`.
+Acknowledgement marks a reviewed event without clearing its condition.
+Delivery marked `attempted` does not prove receipt by an agent or device.
+Weekly underuse thresholds are experimental: 20 points to enter, 15 to clear.
+
+## Data and limits
+
+Usage comes from the same undocumented OAuth endpoints Claude Code uses,
+not transcript token estimates. Samples and fetch caches are shared with
+[claude-code-statusline](https://github.com/thevibeworks/claude-code-statusline)
+under `~/.claude/statusline`. History is partitioned by account UUID;
+directory placement alone is not identity. The calendar requires a known
+account UUID before displaying history.
+
+`CCPACE_DATA_DIR` relocates the store; `--no-log` disables usage-sample
+logging. Derived caches and calendar alert state still update. Fetching
+uses the shared cache, activity gating, and reset boundaries; errors retain
+the last observation with its age. The default interval is 15 minutes,
+with jitter and a 60-second minimum.
+
+Subscription percentages are not interchangeable credit balances. A model
+can consume both its scoped allowance and the shared limits. A 5h cap does
+not imply a depleted week, and a scoped cap does not imply every model is
+blocked. Paid continuation and session-specific modes require their own
+evidence. ccpace does not promise capacity or a particular continuation path.
+
+Provider endpoints can change. Forecasts are estimates. API requests are
+read-only except expired-token refresh, which writes the refreshed OAuth
+token back to the credentials file. Local usage data stays local; enabled
+notifications send messages to the destinations you configure.
+
+## Claude Code plugin
+
+```text
 /plugin marketplace add thevibeworks/ccpace
 /plugin install ccpace@ccpace
 ```
 
-Requires [uv](https://docs.astral.sh/uv/) and a Claude subscription
-you are logged into (`claude login`); credentials are discovered from
-`~/.claude/.credentials*.json`. Multiple credential files = fleet view,
-sorted by tier.
+The `/ccpace` skill reports usage in a conversation. Interactive calendar
+and watch views run in a separate terminal. The compact monitor can also
+run from a downloaded `ccpace.py`; the calendar needs the full package or checkout.
 
-## What it shows
-
-- One block per account: 5h window, 7d window, per-model caps, extra
-  usage spend, prepaid credit balance when nonzero.
-- Dual bars merge usage with window-elapsed time: `█` both passed, `▓`
-  usage ahead (hot), `▒` time ahead (headroom), `░` untouched.
-- The window ledger: the 7d period as its 5h slots, one cell each.
-  `▂▃▄▅▆▇█` what a slot burned (from your sample history), `▁` the
-  baseline (ran, cost under a point — the shortest bar of the same block,
-  so the zero line and the bars share one font), `░` unknown, `▮` now,
-  `▯` ahead, `┤` access ends there (a dry projection never overwrites a
-  cell — the `7d dry` advice row states the wall with its exact time).
-  An ahead-cell you'll sleep through most of draws dim once your hours are
-  learned — same glyph, tint stepped back, so the week ahead reads as a
-  shape and not a count. The cells are a grid anchored to the period start,
-  so read them for shape; the budget line's count comes from the clocks.
-- The advisor: walls (`!`) and one budget line — windows left, the ration
-  that keeps you even, and where the week lands. The landing comes from
-  your own weekday profile once there are two weeks of history (`on your
-  pattern`), from linear pace before that (`at this pace`). One model per
-  block, named, so two numbers on screen never describe the same week
-  differently.
-- The forecast learns the hours you keep, not just the days: burn is
-  shaped by local hour, so a dry-out lands where you will see it instead
-  of at 03:00, and `~6 awake` beside `~9 windows left` rations the pool
-  across the windows you are actually up for.
-- Two pools, one wall: when a model-scoped weekly cap drains slower than
-  the account's 7d, the 7d ends the week first and the rest of that model
-  strands. The row above the budget says what this week's mix can still
-  reach (`fable: ~15% of its 37% left reachable at this mix`).
-- Budget math truncates at the subscription period end (derived from
-  the billing anniversary — the API exposes no cancel/renew date, so
-  the boundary is assumed and marked with `~`).
-- A spent 5h window is named separately from the week behind it:
-  `5h capped · 47% of 7d left · back @Tue 2 04:00`. Current Claude Code
-  may offer `/low-priority` at that wall, but eligibility and its separate
-  allowance travel with the session request, not `/api/oauth/usage`.
-  ccpace therefore reports the proven wall and weekly headroom without
-  claiming the mode is available for an account it cannot see into.
-
-## Notifications
-
-System notifications (macOS/Linux) fire on threshold, quota-full,
-pace, and reset events. Add push channels:
+## Verify and contribute
 
 ```sh
-ccpace --watch --ntfy https://ntfy.sh/your-topic
-ccpace --watch --bark https://api.day.app/YOUR_KEY
-ccpace --watch --bark                        # bark CLI env: BARK_KEY on BARK_SERVER
-ccpace --watch --notifier ~/bin/my-hook.sh   # JSON on stdin
+git clone https://github.com/thevibeworks/ccpace
+cd ccpace
+make check
+make demo
+make build
 ```
 
-Custom notifier payloads carry a stable, inspectable `id` plus canonical
-`window`, `utilization`, `reset_at`, and `reset_time` fields in `data`.
-For example, `full:work:5h:2026-09-02T11:00:00+00:00` identifies one
-condition across custom-notifier restarts.
+Tests cover quota accounting, forecast boundaries, account isolation,
+notification transitions, and calendar navigation at 50, 80, 120, and 160
+columns. Test data is synthetic and isolated from the real usage store.
+These checks validate behavior, not forecast accuracy on every workload.
 
-Env: `CCPACE_NTFY`, `CCPACE_BARK`, `CCPACE_NOTIFIER`, `CCPACE_INTERVAL`,
-`CCPACE_THRESHOLD`, `CCPACE_TZ` (e.g. `America/New_York,Asia/Tokyo`).
-Bare `--bark` reads the bark CLI's own `BARK_KEY` / `BARK_SERVER`
-(default `api.day.app`), and `BARK_GROUP` / `BARK_ICON` ride along when set.
+The terminal UI uses [Textual](https://textual.textualize.io/). Collection
+uses [HTTPX](https://www.python-httpx.org/). The shared store and forecast
+contract are developed alongside claude-code-statusline.
 
-## Data
+[Contributing](CONTRIBUTING.md) · [Calendar design](docs/calendar-tui.md) ·
+[Theme previews](docs/calendar-previews/README.md) · [Data contract](docs/data.md)
 
-Samples append to a shared store compatible with
-[claude-code-statusline](https://github.com/thevibeworks/claude-code-statusline)
-(`~/.claude/statusline/accounts/<alias>/usage.jsonl`): both tools feed
-one history, so the ledger and forecasts get richer whichever tool you
-run. Contract in [docs/data.md](docs/data.md). `--no-log` disables
-writing; `CCPACE_DATA_DIR` relocates the store.
-
-## Honest caveats
-
-- Uses the same undocumented OAuth endpoints as the Claude Code CLI,
-  read-only, against your own account. Anthropic can change or gate
-  them at any release; expect breakage, report it, don't build a
-  business on it.
-- One deliberate write: expired tokens are refreshed via the official
-  OAuth flow and written back to the credentials file — the same thing
-  Claude Code does on your behalf.
-- Polling asks only when the answer can have changed: one fetch pool
-  shared with claude-code-statusline (same account, same directory, one
-  request serves both); in watch mode an account is not re-fetched while
-  Claude Code has done nothing since the last fetch (its history and
-  statusline session state, across every container sharing `~/.claude`)
-  and no window has reset — the block says `(idle 12m)`, `r` asks anyway.
-  Reset boundaries wake the loop; the 15 min interval (± jitter, min 60 s)
-  is the ceiling. A failed fetch keeps the last good numbers on screen,
-  badged `(stale 12m · !429)`, and the next poll is the retry — nothing
-  is locked out.
-- A 5h or model-scoped cap does not freeze the account: lower-priority
-  service or another model can still move 7d. Only an exhausted aggregate
-  week with no paid path is cached to its reset, and both `r` and a newer
-  shared statusline cache break that optimization.
-- The grammar — rows, ledger, provenance, requests — is one page:
-  [DESIGN.md](DESIGN.md).
-- Forecasts are your own history extrapolated, not a promise. Below two
-  weeks of samples the learned walk stays silent and the line falls back
-  to linear pace, saying which one spoke. It also stays silent on a 7d
-  window younger than a day, and on a profile whose numbers are
-  impossible — a projection you cannot check is worse than none.
-- Not affiliated with Anthropic.
-
-## Development
-
-```sh
-make check    # the test suite
-make run      # this tree, once, against your real accounts
-make build    # wheel + sdist
-```
-
-Tests use their own `CCPACE_DATA_DIR`; nothing in `t/` touches the real
-store. The suite is where the burn model lives in readable form — if you
-change how burn is counted, that is the file to argue with first.
-
-## License
-
-MIT
+MIT. Unofficial; not affiliated with Anthropic.

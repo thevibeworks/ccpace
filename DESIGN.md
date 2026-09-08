@@ -1,5 +1,10 @@
 # DESIGN — ccpace's language
 
+The opt-in calendar adds a week grid and hourly inspection to this compact
+grammar. Its interaction and evidence rules are in [Usage calendar](docs/calendar-tui.md).
+Spectrum uses mint usage, cyan forecasts, and rose model identity; Quiet
+and Paper keep the same meanings. Warm colors remain pressure signals.
+
 Same family as [claude-code-statusline/DESIGN.md](https://github.com/thevibeworks/claude-code-statusline/blob/main/DESIGN.md):
 same glyphs, same math, same log. ccpace is the full-screen view of what
 the statusline shows in one line.

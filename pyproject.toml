@@ -1,12 +1,12 @@
 [project]
 name = "ccpace"
-version = "0.8.0"
-description = "Pace your Claude quota: multi-account usage monitor with a countable 5h-window budget, weekday forecasts, and push notifications"
+version = "0.9.0"
+description = "Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "thevibeworks" }]
 requires-python = ">=3.11"
-dependencies = ["httpx[socks]"]
+dependencies = ["httpx[socks]", "textual>=8.2,<9"]
 keywords = ["claude", "claude-code", "usage", "quota", "monitor", "rate-limit"]
 classifiers = [
     "Environment :: Console",
@@ -31,10 +31,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-include = ["ccpace.py"]
+include = ["ccpace.py", "ccpace_calendar.py", "ccpace_tui.py"]
 
 [tool.hatch.build.targets.sdist]
-include = ["ccpace.py", "README.md", "LICENSE", "docs/data.md"]
+include = ["ccpace.py", "ccpace_calendar.py", "ccpace_tui.py", "README.md", "LICENSE", "CHANGELOG.md", "CONTRIBUTING.md", "DESIGN.md", "llms.txt", "docs", "site", ".claude-plugin", "t", "Makefile", "bin"]
 
 [tool.pytest.ini_options]
 testpaths = ["t"]

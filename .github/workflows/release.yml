@@ -15,6 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: verify tagged package
+        run: |
+          uv run --group dev pytest t/ -q
+          uv build
+          test "v$(uv run python -c 'import ccpace; print(ccpace.__version__)')" = "${{ github.ref_name }}"
       - name: release from the CHANGELOG section
         env:
           GH_TOKEN: ${{ github.token }}

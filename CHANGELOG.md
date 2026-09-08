@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.9.0 - Usage calendar (2026-09-08)
+
+Your 5h allowance can run out while much of the weekly pool goes unused.
+`ccpace --calendar` puts both conditions on one screen, with a browsable
+week, hourly usage patterns, quota-period history, and alerts.
+
+- Spectrum, Quiet, and Paper palettes. Change the theme from the picker,
+  with `Ctrl+t`, or through `--theme` / `CCPACE_THEME`.
+- Account-wide and model-scoped limits stay separate. Forecasts use the
+  shared history model and stop at the current quota or access boundary.
+- Missing observations stay blank; recorded zero remains `0.0`. Long
+  observation gaps are not assigned to individual hours. Select an interval
+  for its evidence, or press Enter for hourly detail.
+- Persistent warning transitions, acknowledgement, and JSON notifier hooks.
+  Forecast warnings require two distinct observations. Stale data and
+  escalation into a cap cannot announce recovery. No execution control.
+- `ccpace --calendar --demo` runs synthetic scenarios without credentials,
+  provider requests, usage writes, or notifications.
+
+The calendar uses Textual and requires the package or a full checkout.
+The compact `ccpace` and `--watch` views remain available. Supported on
+macOS and Linux with Python 3.11+. Weekly underuse thresholds are
+experimental; forecasts are estimates, not promised capacity.
+
+```sh
+uvx --from ccpace==0.9.0 ccpace --calendar --demo
+```
+
 ## v0.8.0 — name the wall (2026-09-02)
 
 Claude Code can now offer `/low-priority` at a spent 5h session window, but

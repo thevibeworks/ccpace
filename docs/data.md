@@ -21,6 +21,8 @@ disagrees with it is wrong.
 
     $CCPACE_DATA_DIR/                 default: ~/.claude/statusline
       usage.jsonl, *.cache            the untagged account (see identity below)
+      calendar-alerts.json            bounded derived calendar conditions/events
+      calendar-alerts.lock            serializes calendar notification transitions
       accounts/<account>/             tagged / named accounts
         usage.jsonl                   append-only samples (this spec)
         usage.jsonl.1                 single rotation backup
@@ -33,6 +35,13 @@ disagrees with it is wrong.
 The default root deliberately equals statusline's home: same machine,
 same account, one history. Override with CCPACE_DATA_DIR only to
 isolate (tests, exotic setups).
+
+The experimental calendar reads the same usage records and forecast model.
+Its separate alert journal contains at most 200 transitions and eight days
+of condition state, with stable condition IDs, observation timestamps, and
+transition IDs. It is derived state, not an additional usage-log format.
+The lock serializes read/update/write across calendar processes. Delivery
+is recorded as attempted, not confirmed. Demo mode never opens this journal.
 
 ### Account identity
 

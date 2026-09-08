@@ -43,5 +43,11 @@ Reading the output:
 
 Answer with the numbers, not the raw dump: utilization, time to reset,
 windows left, where it lands and by which model, and whether a wall
-fired. Never run `--watch` from here (interactive TUI; needs a real
-terminal).
+fired. Never run `--watch` or `--calendar` from an agent tool call; both
+need a real interactive terminal. For users who want the calendar, provide
+`uvx ccpace --calendar`; `--calendar --demo` previews it without account
+access. Spectrum, Quiet, and Paper are selected with `--theme`.
+
+Calendar custom-notifier events carry observation and forecast provenance,
+condition IDs, and transition IDs. They report provider limits; they are
+not instructions to pause, switch models, or spend remaining credits.

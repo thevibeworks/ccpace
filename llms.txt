@@ -1,30 +1,22 @@
 # ccpace
 
-> Pace your Claude quota. One Python file (`ccpace.py`, PEP 723, `uvx ccpace`):
-> real 5h/7d/per-model utilization from Anthropic's usage endpoint for one or
-> many accounts, a countable 5h-window budget, a window ledger (where the
-> week went), weekday forecasts learned from your own history, watch mode
-> with push notifications (ntfy, bark, custom hook). Shares its fetch pool and
-> sample log with claude-code-statusline; never estimates from transcripts.
+> Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal.
 
-Key facts for agents:
-- The whole tool is `ccpace.py`; `pyproject.toml` wraps it for PyPI. Deps: httpx.
-- Reads Claude Code credentials from `~/.claude/.credentials*.json` (or `-f`),
-  refreshes expired tokens via the official OAuth flow (the one write it does).
-- State: `~/.claude/statusline/[accounts/<tag>/]` — usage.cache / profile.cache /
-  usage.jsonl / week.cache, the same files claude-code-statusline writes; the
-  layout and record shape are in docs/data.md (the contract) and
-  docs/statusline-interop.md.
-- Request discipline: pool first (a usage.cache < 60 s is the fetch), idle gate
-  in watch mode (no Claude Code activity + no reset -> no request), failures
-  show the last cache badged — never a lockout.
-- The grammar (rows, ledger glyphs, provenance badges, words) is DESIGN.md;
-  it is the same grammar as claude-code-statusline/DESIGN.md.
+Install with `uvx ccpace`. `--calendar --demo` needs no account;
+`--calendar` requires a Claude subscription login and an interactive terminal.
+For an agent tool call, use the one-shot `ccpace` or `ccpace --raw`.
+The calendar watches and warns; it does not steer or pause agents.
+The package includes the collector, calendar model, and Textual UI.
 
 ## Docs
 
-- [README](https://github.com/thevibeworks/ccpace/blob/main/README.md): install, what it shows, notifications, caveats
-- [DESIGN](https://github.com/thevibeworks/ccpace/blob/main/DESIGN.md): the language
-- [Data contract](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): store layout, record shape, fetch pool, forecast inputs
-- [Statusline interop](https://github.com/thevibeworks/ccpace/blob/main/docs/statusline-interop.md): how the two tools share one store
-- [CHANGELOG](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): per-release rationale
+- [ccpace](https://github.com/thevibeworks/ccpace/blob/main/README.md): Claude usage calendar for your terminal. See your 5h limit, weekly pool, and model-scoped limits together, with forecasts and history from your own usage.
+- [Usage calendar](https://github.com/thevibeworks/ccpace/blob/main/docs/calendar-tui.md): Available in ccpace 0.9.0 as the opt-in `--calendar` view. All screen values and account labels below are synthetic.
+- [ccpace data contract (store v1)](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): The store is the product's foundation: every forecast, ledger cell, and notification derives from it. This file is the contract; code that disagrees with it is wrong.
+- [DESIGN — ccpace's language](https://github.com/thevibeworks/ccpace/blob/main/DESIGN.md): The opt-in calendar adds a week grid and hourly inspection to this compact grammar. Its interaction and evidence rules are in [Usage calendar](docs/calendar-tui.md). Spectrum uses mint usage, cyan forecasts, and rose model identity; Quiet and Paper keep the same meanings. Warm colors remain pressure signals.
+- [Contributing](https://github.com/thevibeworks/ccpace/blob/main/CONTRIBUTING.md): For a bug, include the ccpace version, operating system, terminal size, command, expected result, and actual result. Use `--calendar --demo` when it reproduces the issue. For a feature, describe the usage decision it would help someone make.
+- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): Your 5h allowance can run out while much of the weekly pool goes unused. `ccpace --calendar` puts both conditions on one screen, with a browsable week, hourly usage patterns, quota-period history, and alerts.
+
+## Optional
+
+- [Full documentation](https://thevibeworks.github.io/ccpace/llms-full.txt): All mapped documentation in one file

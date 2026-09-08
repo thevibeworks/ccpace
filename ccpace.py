@@ -1,9 +1,9 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["httpx[socks]"]
+# dependencies = ["httpx[socks]", "textual>=8.2,<9"]
 # ///
-# Version: 0.8.0
+# Version: 0.9.0
 """
 ccpace - pace your Claude quota. Multi-account usage monitor for Claude
 subscriptions: real utilization from the official usage endpoint, a
@@ -78,7 +78,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -2587,6 +2587,8 @@ def notify_bark(url: str, title: str, message: str, event: str) -> None:
 
 def format_notification_message(event: str, account: str, data: dict) -> str:
     """Format human-readable notification message for system fallback."""
+    if data.get("condition_id") and data.get("message"):
+        return f"{account}: {data['message']}"
     window = data.get("window") or "quota"
     util = data.get("utilization", 0)
     reset = data.get("reset_time") or ""
@@ -2622,6 +2624,8 @@ def notification_event_id(event: str, account: str, data: dict) -> str:
     window's reset instant. Delta and threshold events add the reading that
     caused them, so two real climbs inside one window remain distinct.
     """
+    if data.get("transition_id"):
+        return str(data["transition_id"])
     window = str(data.get("window") or "quota")
     reset = str(data.get("reset_at") or data.get("reset_time") or "unknown")
     parts = [event, account or "default", window, reset]
@@ -4436,6 +4440,17 @@ def build_parser() -> argparse.ArgumentParser:
         "-w", "--watch", action="store_true", help="watch mode: live TUI, notifications"
     )
     p.add_argument(
+        "--calendar", nargs="?", const="calendar", choices=("calendar", "grid", "timeline"),
+        metavar="VIEW", help="interactive usage calendar (implies watch; old layout names are aliases)",
+    )
+    p.add_argument(
+        "--demo", nargs="?", const="mixed",
+        choices=("mixed", "weekly", "scoped", "stale", "cold", "reset", "credits", "rebase", "weekly-only"),
+        help="calendar with synthetic data; no credentials, network, writes, or notifications",
+    )
+    p.add_argument("--theme", choices=("spectrum", "quiet", "paper"),
+                   help="calendar palette (env CCPACE_THEME)")
+    p.add_argument(
         "--interval",
         type=int,
         default=DEFAULT_WATCH_INTERVAL,
@@ -4513,6 +4528,8 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.quiet, args.verbose)
     signal.signal(signal.SIGINT, lambda *_: sys.exit(EXIT_INTERRUPT))
 
+    if (args.calendar or args.demo) and (args.hello or args.raw or args.profile):
+        parser.error("--calendar/--demo cannot be combined with --hello, --raw, or --profile")
     if args.hello:
         return info_hello()
 
@@ -4539,9 +4556,38 @@ def main(argv: list[str] | None = None) -> int:
     notifier = args.notifier or os.getenv("CCPACE_NOTIFIER")
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
+    trace = args.verbose >= 2
+
+    if args.calendar or args.demo:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            LOGGER.error("calendar requires an interactive terminal")
+            return EXIT_USAGE
+        # The script entry point and the packaged entry point share one core.
+        sys.modules.setdefault("ccpace", sys.modules[__name__])
+        try:
+            from ccpace_calendar import DemoSource, LiveSource
+            from ccpace_tui import CalendarApp
+        except ImportError as e:
+            LOGGER.error("calendar requires the full ccpace package or checkout: %s", e)
+            return EXIT_RUNTIME
+        if args.demo:
+            source = DemoSource(args.demo)
+        else:
+            credentials = get_all_credentials(cred_files, explicit_file)
+            if not credentials:
+                return EXIT_RUNTIME
+            source = LiveSource(
+                credentials, interval=env_int("CCPACE_INTERVAL", args.interval),
+                threshold=env_int("CCPACE_THRESHOLD", args.threshold),
+                notifier=notifier, log_dir=log_dir, no_log=args.no_log, trace=trace,
+            )
+        theme = args.theme or os.getenv("CCPACE_THEME")
+        if theme and theme not in ("spectrum", "quiet", "paper"):
+            parser.error("CCPACE_THEME must be spectrum, quiet, or paper")
+        CalendarApp(source, theme=theme).run()
+        return EXIT_OK
 
     credentials = get_all_credentials(cred_files, explicit_file)
-    trace = args.verbose >= 2
 
     if args.profile:
         return info_profile(credentials)
