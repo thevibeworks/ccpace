@@ -1,21 +1,21 @@
 # ccpace
 
-> Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal.
+> Claude and Codex usage calendar: accounts, quota windows, history, forecasts, and alerts in your terminal.
 
-Install with `uvx ccpace`. `--calendar --demo` needs no account;
-`--calendar` requires a Claude subscription login and an interactive terminal.
-For an agent tool call, use the one-shot `ccpace` or `ccpace --raw`.
+Install with `uvx ccpace`. `--demo` needs no account;
+live usage requires a Claude or Codex subscription login.
+For an agent tool call, use `ccpace --once` or `ccpace --json`.
 The calendar watches and warns; it does not steer or pause agents.
-The package includes the collector, calendar model, and Textual UI.
+The package includes provider collectors, the calendar model, and Textual UI.
 
 ## Docs
 
-- [ccpace](https://github.com/thevibeworks/ccpace/blob/main/README.md): Claude usage calendar for your terminal. See your 5h limit, weekly pool, and model-scoped limits together, with forecasts and history from your own usage.
-- [Usage calendar](https://github.com/thevibeworks/ccpace/blob/main/docs/calendar-tui.md): Available in ccpace 0.9.0 as the opt-in `--calendar` view. All screen values and account labels below are synthetic.
+- [ccpace](https://github.com/thevibeworks/ccpace/blob/main/README.md): Claude and Codex usage calendar for your terminal. Compare accounts, inspect quota windows, and follow forecasts and history from your own usage.
+- [Usage calendar](https://github.com/thevibeworks/ccpace/blob/main/docs/calendar-tui.md): Available in ccpace 0.10.0 as the default interactive view. Multiple accounts open an Accounts overview; `--once` and `--json` are noninteractive. All screen values and account labels below are synthetic.
 - [ccpace data contract (store v1)](https://github.com/thevibeworks/ccpace/blob/main/docs/data.md): The store is the product's foundation: every forecast, ledger cell, and notification derives from it. This file is the contract; code that disagrees with it is wrong.
 - [DESIGN — ccpace's language](https://github.com/thevibeworks/ccpace/blob/main/DESIGN.md): The opt-in calendar adds a week grid and hourly inspection to this compact grammar. Its interaction and evidence rules are in [Usage calendar](docs/calendar-tui.md). Spectrum uses mint usage, cyan forecasts, and rose model identity; Quiet and Paper keep the same meanings. Warm colors remain pressure signals.
 - [Contributing](https://github.com/thevibeworks/ccpace/blob/main/CONTRIBUTING.md): For a bug, include the ccpace version, operating system, terminal size, command, expected result, and actual result. Use `--calendar --demo` when it reproduces the issue. For a feature, describe the usage decision it would help someone make.
-- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): Your 5h allowance can run out while much of the weekly pool goes unused. `ccpace --calendar` puts both conditions on one screen, with a browsable week, hourly usage patterns, quota-period history, and alerts.
+- [Changelog](https://github.com/thevibeworks/ccpace/blob/main/CHANGELOG.md): Claude and Codex accounts now share one usage overview. Bare `ccpace` opens Accounts when several accounts are available, or the calendar for one account. Select an account to inspect its usage without changing an agent's login.
 
 ## Optional
 

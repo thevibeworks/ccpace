@@ -30,6 +30,9 @@ async def capture(output):
         ("calendar-50", (50, 24), "spectrum"),
         ("calendar-50-quiet", (50, 24), "quiet"),
         ("calendar-50-paper", (50, 24), "paper"),
+        ("accounts-120", (120, 36), "spectrum"),
+        ("accounts-80", (80, 24), "paper"),
+        ("codex-120", (120, 36), "spectrum"),
     ]:
         app = CalendarApp(DemoSource(), theme=theme)
         async with app.run_test(size=size) as pilot:
@@ -38,6 +41,11 @@ async def capture(output):
                 if app.snapshots and not app.loading:
                     break
             assert app.snapshots and not app.load_error
+            if not name.startswith("accounts"):
+                if name.startswith("codex"):
+                    app.query_one("#table").move_cursor(row=2)
+                    await pilot.pause()
+                app.action_view("calendar")
             await pilot.pause()
             document = ET.fromstring(app.export_screenshot())
             # Cairo does not perform browser-style fallback for missing glyphs.

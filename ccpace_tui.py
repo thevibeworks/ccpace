@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time as clock
 from datetime import datetime, time, timedelta, timezone
 
 from rich.table import Table
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -23,6 +24,59 @@ THEMES = {
     "quiet": "ccpace-dark",
     "paper": "ccpace-light",
 }
+
+BAND_HOURS = 6
+
+
+class CalendarTable(DataTable):
+    async def _on_click(self, event: events.Click):
+        event.prevent_default()
+        event.stop()
+        if event.button != 1:
+            return
+        row, column = event.style.meta.get("row"), event.style.meta.get("column")
+        if (
+            row is None
+            or column is None
+            or column < 0
+            or event.style.meta.get("out_of_bounds")
+        ):
+            return
+        self.focus()
+        if row == -1 and column < len(self.ordered_columns):
+            col = self.ordered_columns[column]
+            self.post_message(
+                DataTable.HeaderSelected(self, col.key, column, label=col.label)
+            )
+        elif 0 <= row < self.row_count and column < len(self.ordered_columns):
+            self.app.whole_day = False
+            self.move_cursor(row=row, column=column, animate=False)
+            if event.chain >= 2:
+                self._post_selected_message()
+
+    def _on_mouse_scroll_left(self, event):
+        if self.app.view == "calendar":
+            event.prevent_default()
+            event.stop()
+            self.app.pan_calendar(-7)
+
+    def _on_mouse_scroll_right(self, event):
+        if self.app.view == "calendar":
+            event.prevent_default()
+            event.stop()
+            self.app.pan_calendar(7)
+
+    def _on_mouse_scroll_down(self, event):
+        if event.shift and self.app.view == "calendar":
+            event.prevent_default()
+            event.stop()
+            self.app.pan_calendar(7)
+
+    def _on_mouse_scroll_up(self, event):
+        if event.shift and self.app.view == "calendar":
+            event.prevent_default()
+            event.stop()
+            self.app.pan_calendar(-7)
 
 
 class CalendarApp(App):
@@ -77,6 +131,13 @@ class CalendarApp(App):
         Binding("x", "acknowledge", "Acknowledge"),
         Binding("escape", "back", "Back", show=False),
         Binding("t", "today", "Today", show=False),
+        Binding("0", "view('accounts')", "Accounts", show=False),
+        Binding(
+            "ctrl+pageup", "cycle_view(-1)", "Previous tab", show=False, priority=True
+        ),
+        Binding(
+            "ctrl+pagedown", "cycle_view(1)", "Next tab", show=False, priority=True
+        ),
         Binding("left_square_bracket", "previous_week", "Previous week", show=False),
         Binding("right_square_bracket", "next_week", "Next week", show=False),
         Binding("1", "view('calendar')", "Calendar", show=False),
@@ -96,7 +157,9 @@ class CalendarApp(App):
         self.metric = "weekly_all"
         self.selected_date = source.now.date()
         self.week = self.selected_date - timedelta(days=self.selected_date.weekday())
-        self.band = min(5, source.now.hour // 4)
+        self.band = source.now.hour // BAND_HOURS
+        self.whole_day = False
+        self.last_pan = 0.0
         self.view = "calendar"
         self.loading = False
         self.load_error = ""
@@ -192,6 +255,7 @@ class CalendarApp(App):
         yield Static("Loading observations...", id="limits", markup=False)
         yield Static("", id="advice", markup=False)
         yield Tabs(
+            Tab("Accounts", id="accounts"),
             Tab("Calendar", id="calendar"),
             Tab("History", id="history"),
             Tab("Alerts", id="alerts"),
@@ -204,7 +268,7 @@ class CalendarApp(App):
                     yield Button("\u2039", id="previous", tooltip="Previous week")
                     yield Button("Today", id="today")
                     yield Button("\u203a", id="next", tooltip="Next week")
-                yield DataTable(
+                yield CalendarTable(
                     id="table", cursor_type="cell", cell_padding=1, show_row_labels=True
                 )
                 yield Static("", id="legend", markup=False)
@@ -223,6 +287,8 @@ class CalendarApp(App):
             self.call_after_refresh(self.responsive)
 
     def responsive(self):
+        if not self.query("#table"):
+            return
         size = (self.size.width, self.size.height)
         if size == self.last_size:
             return
@@ -236,6 +302,8 @@ class CalendarApp(App):
             self.draw_limits()
 
     def tick(self):
+        if not self.query("#brand"):
+            return
         now = self.source.now
         mode = f"DEMO / {self.source.scenario}" if self.source.demo else "LIVE"
         status = "refreshing" if self.loading else self.load_error or mode
@@ -249,7 +317,10 @@ class CalendarApp(App):
         if self.snapshots:
             state = (
                 self.snapshot.stale(now),
-                tuple(m.reset <= now.timestamp() for m in self.snapshot.meters),
+                tuple(
+                    m.reset is not None and m.reset <= now.timestamp()
+                    for m in self.snapshot.meters
+                ),
             )
             if state != self.freshness_state:
                 self.freshness_state = state
@@ -269,20 +340,29 @@ class CalendarApp(App):
         self.tick()
         try:
             snapshots = await asyncio.to_thread(self.source.load, force)
+            if not self.query("#brand"):
+                return
             first_load = not self.snapshots
-            previous = self.snapshot.account if self.snapshots else None
+            previous = self.snapshot.identity if self.snapshots else None
             self.snapshots = snapshots
             self.account_index = next(
-                (i for i, s in enumerate(snapshots) if s.account == previous), 0
+                (i for i, s in enumerate(snapshots) if s.identity == previous), 0
             )
             self.load_error = ""
             self.rebuilding = True
             account = self.query_one("#account", Select)
             account.set_options(
-                [(f"{s.account} / {s.tier}", str(i)) for i, s in enumerate(snapshots)]
+                [
+                    (f"{s.provider.title()} / {s.account} / {s.tier}", str(i))
+                    for i, s in enumerate(snapshots)
+                ]
             )
             account.value = str(self.account_index)
-            self.sync_metrics()
+            if snapshots:
+                self.sync_metrics()
+            if first_load:
+                self.view = "accounts" if len(snapshots) > 1 else "calendar"
+                self.query_one("#views", Tabs).active = self.view
             self.rebuilding = False
             self.redraw()
             if first_load:
@@ -301,7 +381,7 @@ class CalendarApp(App):
                 m.reset - now.timestamp() + cc.RESET_POLL_GRACE
                 for s in self.snapshots
                 for m in s.meters
-                if m.reset > now.timestamp()
+                if m.reset is not None and m.reset > now.timestamp()
             ]
             self.next_poll = now.timestamp() + min([delay, *resets])
             self.tick()
@@ -340,7 +420,23 @@ class CalendarApp(App):
         headings.append(Text("RESET", style="dim"))
         table.add_row(*headings)
         for meter in snapshot.meters:
-            expired = meter.reset <= now.timestamp()
+            expired = meter.reset is not None and meter.reset <= now.timestamp()
+            if not meter.timed:
+                status = (
+                    "No active window" if meter.state == "inactive" else "Unavailable"
+                )
+                row = [
+                    Text(meter.name),
+                    Text(
+                        f"{meter.used:.0f}%" if meter.used is not None else "",
+                        style="dim",
+                    ),
+                ]
+                if not narrow:
+                    row.append(Text(""))
+                row.append(Text(status, style="dim"))
+                table.add_row(*row)
+                continue
             style = (
                 "dim"
                 if snapshot.stale(now) or expired
@@ -424,6 +520,25 @@ class CalendarApp(App):
                 )
             else:
                 text.append("\n  Paid extra usage enabled", style="dim")
+        if snapshot.provider == "codex":
+            extras = []
+            if snapshot.credit_balance is not None:
+                extras.append(f"Paid credits: {snapshot.credit_balance}")
+            inventory = snapshot.reset_inventory
+            if inventory and isinstance(inventory.get("available_count"), int):
+                extras.append(f"Banked resets: {inventory['available_count']}")
+                from ccpace_providers import timestamp
+
+                expiries = [
+                    timestamp(c.get("expires_at"))
+                    for c in inventory.get("credits") or []
+                ]
+                if dates := [t for t in expiries if t and t > now.timestamp()]:
+                    extras.append(
+                        f"next expiry {datetime.fromtimestamp(min(dates), now.tzinfo):%d %b %H:%M}"
+                    )
+            if extras:
+                text.append("\n  " + " / ".join(extras), style="dim")
         self.query_one("#advice", Static).update(text)
 
     def midnight(self, day):
@@ -461,13 +576,17 @@ class CalendarApp(App):
         if bucket.reset:
             return "Quota boundary"
         if start.timestamp() >= self.source.now.timestamp():
-            if self.model.meter and start.timestamp() >= self.model.meter.reset:
+            if (
+                self.model.meter
+                and self.model.meter.reset is not None
+                and start.timestamp() >= self.model.meter.reset
+            ):
                 return "Next quota period"
             return "No forecast"
         return "No observations"
 
     def draw_table(self):
-        if not self.snapshots:
+        if not self.snapshots or not self.query("#table"):
             return
         self.model = CalendarModel(self.snapshot, self.source.now, self.metric)
         table = self.query_one("#table", DataTable)
@@ -475,13 +594,20 @@ class CalendarApp(App):
         old_row = table.cursor_row
         table.clear(columns=True)
         table.cursor_type = "cell"
-        table.show_row_labels = True
+        table.show_row_labels = False
+        table.fixed_columns = 0
         self.row_metadata = []
         name = self.model.meter.name if self.model.meter else self.metric
         start, end = self.week, self.week + timedelta(days=6)
         label = f"{start:%d %b} - {end:%d %b %Y} / {name}"
         legend = "points used / + partial / ~ forecast / | reset"
-        if self.view == "history":
+        if self.view == "accounts":
+            self.accounts_table(table)
+            label, legend = (
+                "Accounts / provider usage",
+                "Select an account to inspect its calendar",
+            )
+        elif self.view == "history":
             self.history_table(table)
             label, legend = (
                 f"Quota periods / {name}",
@@ -499,6 +625,8 @@ class CalendarApp(App):
         elif self.size.width < 65:
             self.agenda_table(table)
         else:
+            table.add_column("Time", width=5)
+            table.fixed_columns = 1
             width = max(5, (table.size.width - 9) // 7 - 2)
             for day in range(7):
                 date = self.week + timedelta(days=day)
@@ -513,32 +641,40 @@ class CalendarApp(App):
                     ),
                     width=width,
                 )
-            for band in range(6):
+            for band in range(24 // BAND_HOURS):
                 cells = []
                 for day in range(7):
                     cursor = self.midnight(self.week + timedelta(days=day)) + timedelta(
-                        hours=band * 4
+                        hours=band * BAND_HOURS
                     )
                     cell = self.cell(
-                        self.model.bucket(cursor, cursor + timedelta(hours=4))
+                        self.model.bucket(cursor, cursor + timedelta(hours=BAND_HOURS))
                     )
                     if self.size.height >= 32:
                         cell.append("\n")
-                        cell.append_text(self.hour_strip(cursor.date(), band * 4, 4))
+                        cell.append_text(
+                            self.hour_strip(
+                                cursor.date(), band * BAND_HOURS, BAND_HOURS
+                            )
+                        )
                     cells.append(cell)
                 table.add_row(
+                    Text(f"{band * BAND_HOURS:02}:00", style="dim"),
                     *cells,
-                    label=f"{band * 4:02}-{band * 4 + 4:02}",
                     height=2 if self.size.height >= 32 else 1,
                 )
             table.move_cursor(
                 row=self.band,
-                column=max(0, min(6, (self.selected_date - self.week).days)),
+                column=1 + max(0, min(6, (self.selected_date - self.week).days)),
                 animate=False,
             )
-        if self.view in ("history", "alerts") and table.row_count:
+        if self.view == "accounts" and table.row_count:
+            table.move_cursor(row=self.account_index, animate=False)
+        elif self.view in ("history", "alerts") and table.row_count:
             table.move_cursor(row=min(old_row, table.row_count - 1), animate=False)
         self.query_one("#range", Static).update(label)
+        for button in ("#previous", "#today", "#next"):
+            self.query_one(button).display = self.view in ("calendar", "day")
         self.query_one("#legend", Static).update(
             legend if self.size.width >= 70 else "points used / + partial / ~ forecast"
         )
@@ -553,6 +689,50 @@ class CalendarApp(App):
         self.draw_detail()
         if self.focused is None:
             table.focus()
+
+    def accounts_table(self, table):
+        table.cursor_type = "row"
+        table.add_columns("Provider", "Account", "Short", "Weekly")
+        wide = self.size.width >= 100
+        if wide:
+            table.add_column("Next reset")
+        for snapshot in self.snapshots:
+            self.row_metadata.append(snapshot.identity)
+            values = []
+            for key in ("session", "weekly_all"):
+                meter = next((m for m in snapshot.meters if m.key == key), None)
+                if meter is None:
+                    value = "Unavailable"
+                elif meter.state == "inactive":
+                    value = "Not active"
+                elif meter.used is None:
+                    value = "Unavailable"
+                else:
+                    value = "cap" if meter.used >= 100 else f"{meter.used:.0f}% used"
+                style = (
+                    "dim"
+                    if snapshot.stale(self.source.now)
+                    else self.current_theme.warning
+                    if meter and meter.used is not None and meter.used >= 80
+                    else ""
+                )
+                values.append(Text(value, style=style))
+            if wide:
+                upcoming = [
+                    m
+                    for m in snapshot.meters
+                    if m.reset is not None and m.reset > self.source.now.timestamp()
+                ]
+                next_meter = min(upcoming, key=lambda m: m.reset) if upcoming else None
+                values.append(
+                    Text(
+                        f"{next_meter.name} {datetime.fromtimestamp(next_meter.reset, self.source.now.tzinfo):%a %H:%M}"
+                        if next_meter
+                        else "",
+                        style="dim",
+                    )
+                )
+            table.add_row(snapshot.provider.title(), Text(snapshot.account), *values)
 
     def agenda_table(self, table):
         table.cursor_type = "row"
@@ -572,6 +752,8 @@ class CalendarApp(App):
         )
 
     def day_table(self, table):
+        table.add_column("Time", width=11)
+        table.fixed_columns = 1
         available = self.snapshot.meters
         for meter in available:
             table.add_column(meter.name)
@@ -587,25 +769,27 @@ class CalendarApp(App):
             local = cursor.astimezone(self.source.now.tzinfo)
             self.row_metadata.append(cursor)
             table.add_row(
+                local.strftime("%H:%M %z"),
                 *(
                     self.cell(
                         model.bucket(cursor, min(end, cursor + timedelta(hours=1)))
                     )
                     for model in models
                 ),
-                label=local.strftime("%H:%M %z"),
             )
             cursor += timedelta(hours=1)
-        table.move_cursor(row=min(table.row_count - 1, self.band * 4), animate=False)
+        table.move_cursor(
+            row=min(table.row_count - 1, self.band * BAND_HOURS), animate=False
+        )
 
     def history_table(self, table):
         table.cursor_type = "row"
-        table.show_row_labels = False
         table.add_columns("Reset", "Last seen", "Used", "Samples", "State")
         periods = {}
         for observation in self.snapshot.observations:
             if (
                 observation.meter.key == self.metric
+                and observation.meter.timed
                 and observation.at <= self.source.now.timestamp()
             ):
                 periods.setdefault(round(observation.meter.reset / 60), []).append(
@@ -637,10 +821,13 @@ class CalendarApp(App):
 
     def alerts_table(self, table):
         table.cursor_type = "row"
-        table.show_row_labels = False
         table.add_columns("Time", "Limit", "Condition", "Delivery")
         for event in reversed(self.source.journal.events):
-            if event["account"] != self.snapshot.account:
+            if (
+                not event["data"]
+                .get("condition_id", "")
+                .startswith(self.snapshot.identity + ":")
+            ):
                 continue
             data = event["data"]
             self.row_metadata.append(event)
@@ -659,6 +846,49 @@ class CalendarApp(App):
             return
         table = self.query_one("#table", DataTable)
         now, snapshot = self.source.now, self.snapshot
+        if self.view == "accounts":
+            detail = Text(
+                f"{snapshot.provider.title()} / {snapshot.account}\n", style="bold"
+            )
+            detail.append(f"{snapshot.tier}\n\n", style="dim")
+            for meter in snapshot.meters:
+                detail.append(meter.name + "\n", style=self.current_theme.primary)
+                detail.append(
+                    (
+                        "No active window"
+                        if meter.state == "inactive"
+                        else f"{meter.used:g}% used"
+                        if meter.used is not None
+                        else "Unavailable"
+                    )
+                    + "\n"
+                )
+                if meter.reset is not None:
+                    detail.append(
+                        f"resets {datetime.fromtimestamp(meter.reset, now.tzinfo):%a %d %H:%M}\n",
+                        style="dim",
+                    )
+                detail.append("\n")
+            if snapshot.error:
+                detail.append(snapshot.error + "\n", style=self.current_theme.warning)
+            if snapshot.reset_inventory and isinstance(
+                snapshot.reset_inventory.get("available_count"), int
+            ):
+                detail.append(
+                    f"Banked resets: {snapshot.reset_inventory['available_count']}\n",
+                    style=self.current_theme.secondary,
+                )
+            if snapshot.observed:
+                detail.append(
+                    f"\nObserved {datetime.fromtimestamp(snapshot.observed, now.tzinfo):%d %b %H:%M %Z}",
+                    style="dim",
+                )
+            self.query_one("#detail", Static).update(detail)
+            self.query_one("#bottom-detail", Static).update(
+                f"{snapshot.provider.title()} / {snapshot.account} / {snapshot.tier}\n"
+                + (snapshot.error or "")
+            )
+            return
         detail = Text()
         if self.view == "alerts" and self.row_metadata:
             event = self.row_metadata[min(table.cursor_row, len(self.row_metadata) - 1)]
@@ -666,8 +896,13 @@ class CalendarApp(App):
             detail.append(event["data"]["provenance"] + "\n", style="dim")
             detail.append("condition\n" + event["data"]["condition_id"], style="dim")
         else:
-            start = self.midnight(self.selected_date) + timedelta(hours=self.band * 4)
-            end = start + timedelta(hours=4)
+            start = self.midnight(self.selected_date) + timedelta(
+                hours=self.band * BAND_HOURS
+            )
+            end = start + timedelta(hours=BAND_HOURS)
+            if self.whole_day:
+                start = self.midnight(self.selected_date)
+                end = self.midnight(self.selected_date + timedelta(days=1))
             if self.view == "day" and self.row_metadata:
                 start = self.row_metadata[
                     min(table.cursor_row, len(self.row_metadata) - 1)
@@ -680,6 +915,25 @@ class CalendarApp(App):
                 style="dim",
             )
             name = self.model.meter.name if self.model.meter else self.metric
+            selected_window = next(
+                (
+                    m
+                    for m in snapshot.meters
+                    if m.key == "session"
+                    and m.timed
+                    and start.timestamp() <= m.reset
+                    and end.timestamp() > m.reset - m.duration
+                ),
+                None,
+            )
+            if selected_window:
+                opened = datetime.fromtimestamp(
+                    selected_window.reset - selected_window.duration, now.tzinfo
+                )
+                closes = datetime.fromtimestamp(selected_window.reset, now.tzinfo)
+                detail.append(
+                    f"5h window {opened:%H:%M} - {closes:%H:%M}\n\n", style="dim"
+                )
             if bucket.forecast is not None:
                 detail.append(
                     f"~{bucket.forecast:.1f} {name} points\n",
@@ -739,7 +993,9 @@ class CalendarApp(App):
                 detail.append("00                    24\n", style="dim")
                 detail.append_text(strip)
                 detail.append("\n\n", style="dim")
-                for hour in range(self.band * 4, self.band * 4 + 4):
+                for hour in range(
+                    self.band * BAND_HOURS, min(24, self.band * BAND_HOURS + BAND_HOURS)
+                ):
                     cursor = self.midnight(self.selected_date) + timedelta(hours=hour)
                     item = self.model.bucket(cursor, cursor + timedelta(hours=1))
                     if item.label:
@@ -764,8 +1020,13 @@ class CalendarApp(App):
                 style="dim",
             )
         self.query_one("#detail", Static).update(detail)
-        start = self.midnight(self.selected_date) + timedelta(hours=self.band * 4)
-        end = start + timedelta(hours=4)
+        start = self.midnight(self.selected_date) + timedelta(
+            hours=self.band * BAND_HOURS
+        )
+        end = start + timedelta(hours=BAND_HOURS)
+        if self.whole_day:
+            start = self.midnight(self.selected_date)
+            end = self.midnight(self.selected_date + timedelta(days=1))
         if self.view == "day" and self.row_metadata:
             start = self.row_metadata[min(table.cursor_row, len(self.row_metadata) - 1)]
             end = start + timedelta(hours=1)
@@ -792,7 +1053,9 @@ class CalendarApp(App):
             return
         row, col = event.coordinate
         if self.view == "calendar" and self.size.width >= 65:
-            day, self.band = col, row
+            if col == 0:
+                return
+            day, self.band = col - 1, row
             self.selected_date = self.week + timedelta(days=min(6, day))
         self.draw_detail()
 
@@ -800,7 +1063,18 @@ class CalendarApp(App):
     def row_highlighted(self, event):
         if self.rebuilding or not self.snapshots:
             return
-        if self.view == "calendar":
+        if self.view == "accounts" and self.row_metadata and self.query("#table"):
+            table = self.query_one("#table", DataTable)
+            if event.cursor_row != table.cursor_row or event.cursor_row >= len(
+                self.snapshots
+            ):
+                return
+            self.account_index = event.cursor_row
+            self.query_one("#account", Select).value = str(self.account_index)
+            self.sync_metrics()
+            self.model = CalendarModel(self.snapshot, self.source.now, self.metric)
+            self.draw_limits()
+        elif self.view == "calendar":
             self.selected_date = self.week + timedelta(days=min(6, event.cursor_row))
         self.draw_detail()
 
@@ -808,6 +1082,13 @@ class CalendarApp(App):
     @on(DataTable.RowSelected, "#table")
     def selected(self):
         self.action_inspect()
+
+    @on(DataTable.HeaderSelected, "#table")
+    def date_selected(self, event):
+        if self.view == "calendar" and self.size.width >= 65 and event.column_index > 0:
+            self.selected_date = self.week + timedelta(days=event.column_index - 1)
+            self.whole_day = True
+            self.draw_detail()
 
     @on(Select.Changed)
     def select_changed(self, event):
@@ -865,6 +1146,10 @@ class CalendarApp(App):
                 self.notify("Could not record acknowledgement", severity="error")
 
     def action_inspect(self):
+        self.whole_day = False
+        if self.view == "accounts":
+            self.action_view("calendar")
+            return
         if self.view == "history" and self.row_metadata:
             self.selected_date = self.row_metadata[
                 self.query_one("#table", DataTable).cursor_row
@@ -880,6 +1165,7 @@ class CalendarApp(App):
         self.action_view("calendar")
 
     def action_view(self, view):
+        self.whole_day = False
         self.view = view
         self.query_one("#views", Tabs).active = view
         self.draw_table()
@@ -892,6 +1178,17 @@ class CalendarApp(App):
         self.query_one("#views", Tabs).active = "calendar"
         self.draw_table()
 
+    def pan_calendar(self, days):
+        now = clock.monotonic()
+        previous, self.last_pan = self.last_pan, now
+        if now - previous >= 0.3:
+            self.shift_week(days)
+
+    def action_cycle_view(self, step):
+        views = ("accounts", "calendar", "history", "alerts")
+        current = "calendar" if self.view == "day" else self.view
+        self.action_view(views[(views.index(current) + step) % len(views)])
+
     def action_previous_week(self):
         self.shift_week(-7)
 
@@ -901,7 +1198,7 @@ class CalendarApp(App):
     def action_today(self):
         self.selected_date = self.source.now.date()
         self.week = self.selected_date - timedelta(days=self.selected_date.weekday())
-        self.band = self.source.now.hour // 4
+        self.band = self.source.now.hour // BAND_HOURS
         self.action_view("calendar")
 
     def action_account(self):

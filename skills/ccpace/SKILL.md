@@ -1,6 +1,6 @@
 ---
 name: ccpace
-description: Check Claude subscription usage, quota pace, and window budget. Use when the user asks how much quota is left, whether they are burning too fast, when limits reset, or to watch usage.
+description: Check Claude and Codex subscription usage, quota pace, and account budgets. Use when the user asks how much quota is left, whether they are burning too fast, or when limits reset.
 ---
 
 # ccpace
@@ -8,11 +8,18 @@ description: Check Claude subscription usage, quota pace, and window budget. Use
 Run the monitor and interpret its output for the user.
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/bin/ccpace"          # one glance, all accounts
-"${CLAUDE_PLUGIN_ROOT}/bin/ccpace" --raw    # raw JSON when you need numbers
+"${CLAUDE_PLUGIN_ROOT}/bin/ccpace" --once   # one snapshot, all providers
+"${CLAUDE_PLUGIN_ROOT}/bin/ccpace" --json   # structured account snapshots
+"${CLAUDE_PLUGIN_ROOT}/bin/ccpace" --raw    # legacy Claude-only payload
 ```
 
-Reading the output:
+The one-shot view identifies provider and account, each limit's used
+percentage and reset, and any source error. `--json` has `schema: 1` and
+an `accounts` array with limits, freshness, reset inventory, and balance.
+Keep provider/account identities separate. Banked resets are not credits;
+ccpace does not redeem them. A missing reset is not unlimited capacity.
+
+Reading the legacy Claude compact output (`--provider claude` in a pipe):
 
 - Each account block: header rule with tier + alias + subscription period
   end; one row per rate-limit window (5h, 7d, per-model).
@@ -43,7 +50,7 @@ Reading the output:
 
 Answer with the numbers, not the raw dump: utilization, time to reset,
 windows left, where it lands and by which model, and whether a wall
-fired. Never run `--watch` or `--calendar` from an agent tool call; both
+fired. Never run bare `ccpace`, `--watch`, or `--calendar` from an agent tool call; all
 need a real interactive terminal. For users who want the calendar, provide
 `uvx ccpace --calendar`; `--calendar --demo` previews it without account
 access. Spectrum, Quiet, and Paper are selected with `--theme`.

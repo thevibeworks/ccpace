@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ccpace | Claude usage calendar</title>
-  <meta name="description" content="Claude usage calendar for your terminal. Watch 5h and weekly limits together, browse history, and forecast remaining capacity. Try the demo without an account.">
+  <title>ccpace | Claude and Codex usage calendar</title>
+  <meta name="description" content="Claude and Codex usage calendar for your terminal. Compare accounts, watch quota windows, browse history, and forecast remaining capacity.">
   <link rel="canonical" href="https://thevibeworks.github.io/ccpace/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
-  <meta property="og:title" content="ccpace | Claude usage calendar">
+  <meta property="og:title" content="ccpace | Claude and Codex usage calendar">
   <meta property="og:description" content="Short-window pressure. Weekly headroom. One calendar.">
   <meta property="og:image" content="https://thevibeworks.github.io/ccpace/assets/calendar-120.png">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"ccpace","softwareVersion":"0.9.0","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal","url":"https://thevibeworks.github.io/ccpace/","downloadUrl":"https://pypi.org/project/ccpace/","license":"https://opensource.org/licenses/MIT"}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"ccpace","softwareVersion":"0.10.0","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Claude and Codex usage calendar: accounts, quota windows, history, forecasts, and alerts in your terminal","url":"https://thevibeworks.github.io/ccpace/","downloadUrl":"https://pypi.org/project/ccpace/","license":"https://opensource.org/licenses/MIT"}</script>
 </head>
 <body>
   <header class="wrap masthead">
@@ -26,11 +26,11 @@
   </header>
   <main>
     <section class="intro wrap">
-      <p class="release"><a href="https://github.com/thevibeworks/ccpace/releases/tag/v0.9.0">v0.9.0 / Usage calendar</a></p>
+      <p class="release"><a href="https://github.com/thevibeworks/ccpace/releases/tag/v0.10.0">v0.10.0 / Accounts + Codex</a></p>
       <h1>ccpace</h1>
-      <p class="lead">Your Claude usage, across the week.</p>
+      <p class="lead">Claude and Codex, across your accounts.</p>
       <p class="summary">A 5h limit can run out while the weekly pool goes unused.
-        See both in one terminal calendar, with history, forecasts, and alerts.</p>
+        Compare accounts and inspect both limits in one calendar, with history, forecasts, and alerts.</p>
       <div class="quick-start"><code>uvx ccpace --calendar --demo</code><button class="copy" type="button" aria-label="Copy demo command" title="Copy demo command" data-copy="uvx ccpace --calendar --demo"><img src="assets/copy.svg" width="18" height="18" alt=""></button><span id="copy-status" role="status"></span></div>
       <p class="caption">No account needed for the demo. macOS + Linux.</p>
     </section>
@@ -49,27 +49,32 @@
       </picture>
       <p class="caption">Synthetic usage, rendered by ccpace. The amber line is 5h pressure; the weekly forecast remains visible beneath it.</p>
     </section>
+    <section class="preview wrap" aria-label="Account overview">
+      <h2>One overview. Separate allowances.</h2>
+      <picture><source media="(max-width: 560px)" srcset="assets/accounts-80.png"><img src="assets/accounts-120.png" width="1482" height="928" alt="Synthetic Claude and Codex accounts with separate short-window and weekly usage."></picture>
+      <p class="caption">Select an account to inspect its calendar. Viewing an account does not switch an agent's login.</p>
+    </section>
     <section class="features wrap" aria-label="What the calendar shows">
       <article><span class="index">01 / NOW</span><h2>Which limit comes next?</h2><p>5h, weekly, and model-scoped allowances stay separate. Each shows its usage and reset time, even while you inspect history.</p></article>
       <article><span class="index">02 / HISTORY</span><h2>Where did the week go?</h2><p>Browse interval totals and hourly patterns. Select a day for the underlying observations. Missing history stays blank.</p></article>
       <article><span class="index">03 / AHEAD</span><h2>How much will remain?</h2><p>Forecasts learn from your own weekday and hourly usage. Alerts can go to your terminal, phone, or a JSON notification hook.</p></article>
     </section>
     <section id="install" class="install wrap">
-      <div><p class="index">GET STARTED</p><h2>Open your calendar.</h2><p>Install <a href="https://docs.astral.sh/uv/">uv</a>, then run the demo. For live usage, sign into Claude Code first.</p></div>
+      <div><p class="index">GET STARTED</p><h2>Open your calendar.</h2><p>Install <a href="https://docs.astral.sh/uv/">uv</a>, then run the demo. For live usage, sign into Claude Code or Codex first.</p></div>
       <pre><code><span class="comment"># Synthetic demo, no credentials</span>
 uvx ccpace --calendar --demo
 
-<span class="comment"># Your Claude accounts</span>
-uvx ccpace --calendar
+<span class="comment"># Your Claude and Codex accounts</span>
+uvx ccpace
 
-<span class="comment"># A compact view, anytime</span>
-uvx ccpace</code></pre>
+<span class="comment"># One snapshot for scripts</span>
+uvx ccpace --json</code></pre>
       <p class="install-links"><a href="https://pypi.org/project/ccpace/">PyPI package ↗</a><a href="https://github.com/thevibeworks/ccpace#claude-code-plugin">Claude Code plugin ↗</a></p>
     </section>
     <section class="limits wrap">
       <h2>Measured usage. Estimated forecasts.</h2>
-      <p>Usage comes from the OAuth endpoints Claude Code uses. History and caches are shared with <a href="https://github.com/thevibeworks/claude-code-statusline">claude-code-statusline</a> on your machine. Forecasts use that history; they are not promises of available capacity.</p>
-      <p>ccpace watches and warns. It does not control agent execution. Provider endpoints can change. Expired OAuth tokens are refreshed and written back; usage data stays local unless you configure notification destinations.</p>
+      <p>Usage comes from provider OAuth endpoints. Claude history and caches are shared with <a href="https://github.com/thevibeworks/claude-code-statusline">claude-code-statusline</a>; Codex has its own account-scoped store. Forecasts use that history; they are not promises of available capacity.</p>
+      <p>ccpace watches and warns. It does not control agent execution or redeem Codex resets. Provider endpoints can change. Claude tokens may refresh through the existing OAuth flow; Codex auth files stay read-only. Usage data stays local unless you configure notification destinations.</p>
       <a href="https://github.com/thevibeworks/ccpace#data-and-limits">Data and limits ↗</a>
     </section>
   </main>

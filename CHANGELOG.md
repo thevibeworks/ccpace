@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.10.0 - Accounts and Codex (2026-09-08)
+
+Claude and Codex accounts now share one usage overview. Bare `ccpace` opens
+Accounts when several accounts are available, or the calendar for one account.
+Select an account to inspect its usage without changing an agent's login.
+
+- Read-only Codex OAuth collection from `CODEX_HOME/auth*.json` or explicit
+  `--codex-file` paths. Usage is routed by workspace and stored separately
+  per provider and account. Native auth files are never rewritten.
+- Codex windows use reported durations, including weekly-only and scoped
+  payloads. Banked-reset inventory and paid credit balances stay separate.
+  No reset is redeemed or purchased by ccpace.
+- Inactive windows remain visible as `No active window`. Calendar rows are
+  local clock ticks (`00:00`, `06:00`, `12:00`, `18:00`), independent of
+  whether a 5h quota window has started.
+- Single click selects, double-click inspects, and date headings select a
+  day. Horizontal wheel events and Shift+wheel pan weeks with momentum
+  coalescing. `0` opens Accounts; `Ctrl+PageUp/PageDown` cycles views.
+- `--watch` now opens the calendar. `--once` and versioned `--json` output
+  provide noninteractive snapshots; `--raw` retains the legacy Claude JSON.
+  Piped output stays noninteractive. Scripts using the old `--json` alias
+  should switch to `--raw` or adopt the new schema.
+
+Live Codex collection was checked against a staged subscription login,
+including reset inventory and unchanged auth-file contents. Synthetic tests
+cover account isolation, cache fallback, source deduplication, missing reset
+times, and mouse/keyboard navigation. Expired Codex credentials require a
+fresh login through their owning CLI or account manager.
+
+```sh
+uvx --refresh ccpace --demo
+```
+
 ## v0.9.0 - Usage calendar (2026-09-08)
 
 Your 5h allowance can run out while much of the weekly pool goes unused.

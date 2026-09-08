@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "ccpace",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "ccpace single-plugin marketplace",
   "owner": { "name": "thevibeworks" },
   "plugins": [
     {
       "name": "ccpace",
-      "description": "Claude usage calendar: 5h and weekly limits, forecasts, history, and notifications in your terminal",
+      "description": "Claude and Codex usage calendar: accounts, quota windows, history, forecasts, and alerts in your terminal",
       "source": "./",
       "category": "productivity"
     }

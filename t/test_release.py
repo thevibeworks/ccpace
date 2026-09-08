@@ -50,6 +50,9 @@ def test_site_assets_exist():
         "calendar-50",
         "calendar-50-quiet",
         "calendar-50-paper",
+        "accounts-120",
+        "accounts-80",
+        "codex-120",
     ):
         assert (ROOT / "site/assets" / f"{name}.png").read_bytes() == (
             ROOT / "docs/calendar-previews" / f"{name}.png"

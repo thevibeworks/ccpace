@@ -23,6 +23,10 @@ disagrees with it is wrong.
       usage.jsonl, *.cache            the untagged account (see identity below)
       calendar-alerts.json            bounded derived calendar conditions/events
       calendar-alerts.lock            serializes calendar notification transitions
+      providers/codex/accounts/<id>/  Codex-only quota cache and history
+        usage.cache                   last successful account-scoped observation
+        usage.jsonl, usage.jsonl.1     quota-only samples; same 32 MiB rotation cap
+        usage.lock                    serializes reads/fetch/publication per account
       accounts/<account>/             tagged / named accounts
         usage.jsonl                   append-only samples (this spec)
         usage.jsonl.1                 single rotation backup

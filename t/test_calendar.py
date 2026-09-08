@@ -268,14 +268,15 @@ def test_calendar_navigation_and_resize(utc_tz):
         app = CalendarApp(DemoSource())
         async with app.run_test(size=(120, 36)) as pilot:
             await loaded(app, pilot)
+            app.action_view("calendar")
             table = app.query_one("#table", DataTable)
-            assert table.row_count == 6
+            assert table.row_count == 4
             assert not app.query("#layout")
             for row in range(table.row_count):
                 cells = table.get_row_at(row)
                 assert all("?" not in str(cell) for cell in cells)
-                assert all(not str(cell).strip() for cell in cells[3:])
-            assert "\n" in str(table.get_row_at(0)[0])
+                assert all(not str(cell).strip() for cell in cells[4:])
+            assert "\n" in str(table.get_row_at(0)[1])
             table.focus()
             await pilot.press("right")
             date, band = app.selected_date, app.band
@@ -352,6 +353,7 @@ def test_queued_highlight_after_table_detaches(utc_tz):
             await app.query_one("#table", DataTable).remove()
             app.draw_detail()
             await pilot.pause()
+
     asyncio.run(run())
 
 
@@ -369,8 +371,9 @@ def test_demo_scenarios_render_without_live_effects(scenario, store, monkeypatch
         async with app.run_test(size=(80, 24)) as pilot:
             await loaded(app, pilot)
             assert not app.load_error
-            assert app.query_one("#table", DataTable).row_count == 6
-            for row in range(6):
+            app.action_view("calendar")
+            assert app.query_one("#table", DataTable).row_count == 4
+            for row in range(4):
                 assert all(
                     "?" not in str(cell)
                     for cell in app.query_one("#table", DataTable).get_row_at(row)

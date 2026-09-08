@@ -1,5 +1,10 @@
 # Usage calendar
 
+Accounts compares Claude and Codex without combining their allowances.
+The screenshots below use synthetic data only.
+
+![Account overview](accounts-120.png)
+
 The week grid combines interval totals with small hourly strips. Selecting
 an interval shows the day's pattern and the underlying observations.
 
@@ -8,6 +13,12 @@ unavailable forecasts, and future quota periods when selected. Observed
 zero remains `0.0`; `+` marks a partial observed amount.
 
 ![Calendar, 120 columns](calendar-120.png)
+
+The ruler is local clock time. A 5h window can be inactive while weekly
+history remains available. Codex reset inventory and paid credits are
+shown separately when the provider supplies them.
+
+![Codex account](codex-120.png)
 
 Spectrum is the default dark palette. Quiet softens the accents; Paper
 uses a light background. Select a palette with the theme picker or `Ctrl+t`.

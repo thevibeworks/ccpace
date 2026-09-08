@@ -1,9 +1,10 @@
 # Usage calendar
 
-Available in ccpace 0.9.0 as the opt-in `--calendar` view.
+Available in ccpace 0.10.0 as the default interactive view. Multiple
+accounts open an Accounts overview; `--once` and `--json` are noninteractive.
 All screen values and account labels below are synthetic.
 
-The implementation provides one `--calendar` view with interval totals
+The implementation provides one calendar view with interval totals
 and hourly patterns, live collection, synthetic scenarios, day inspection,
 period history, and persistent warning transitions. See the
 [calendar preview](calendar-previews/README.md) and
@@ -89,13 +90,19 @@ The weekly forecast ends at the current pool's reset. The Wednesday 08-12
 cell therefore contains a boundary and an unobserved portion. Do not
 extend this pool's remaining balance into a new, unobserved pool.
 
-The calendar's four-hour buckets organize wall time. They are explicitly
+The calendar's six-hour bands organize wall time, labeled with clock ticks
+at 00:00, 06:00, 12:00, and 18:00. They are explicitly
 not the provider's five-hour windows. Selecting a bucket opens its precise
 time range, coverage, burn, and the real quota windows that overlap it.
 Daily totals may accompany the columns when space permits.
 
 ## Interaction and layout
 
+- Accounts is the starting view with multiple accounts. Selection is
+  display-only, keyed by provider and account identity. `0` opens Accounts;
+  `1`, `2`, and `3` retain Calendar, History, and Alerts. Ctrl+PageUp/PageDown
+  cycles views. Single click selects, double-click drills in, and date
+  heading clicks select a day. Horizontal wheel and Shift+wheel pan dates.
 - Calendar is the default view. Left/right selects a day; up/down selects
   a time band. Enter opens the day inspector; Escape returns with selection
   preserved. The account picker preserves the selected date where possible.
@@ -147,6 +154,15 @@ time. Relative text can supplement them only while the watch clock is live.
 Reuse the shared account-partitioned store and forecast model. Do not
 create another writer dialect or a different forecast inside the renderer.
 Retain the existing schema, provenance, and co-writer rules.
+
+Claude retains its shared statusline records. Codex stores quota-only
+observations under a provider/account namespace, using a workspace and user
+identity key or a source-specific key when user claims are unavailable.
+Codex collection reads the direct OAuth usage endpoint, matching CodexBar's
+documented route; named auth files can be monitored without account switching.
+The parser uses reported durations and keeps optional reset timestamps.
+Banked reset inventory is read-only. No credentials are rewritten or reset
+credits redeemed. New Codex history starts empty.
 
 The current ledger and hour profile are useful inputs, but they are not
 yet a complete calendar evidence model. The current envelope attributes a

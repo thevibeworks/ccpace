@@ -3,21 +3,23 @@
 # requires-python = ">=3.11"
 # dependencies = ["httpx[socks]", "textual>=8.2,<9"]
 # ///
-# Version: 0.9.0
+# Version: 0.10.0
 """
-ccpace - pace your Claude quota. Multi-account usage monitor for Claude
-subscriptions: real utilization from the official usage endpoint, a
-countable 5h-window budget, and forecasts from your own history.
+ccpace - Claude and Codex usage calendars, account comparisons, and alerts.
+Interactive terminals open Accounts or Calendar; --once and --json print
+one provider-aware snapshot. Usage comes from provider OAuth endpoints.
 
-READ-ONLY against the API, with one deliberate exception: when a token
-is expired it is refreshed via the official OAuth refresh flow and the
-new token is written back to the credentials file (same as Claude Code
-itself does). Nothing else is ever sent or modified.
+Codex auth files are read-only. Claude credentials retain their existing
+OAuth refresh behavior. Neither provider's agents or reset credits are controlled.
 
 examples:
-  %(prog)s                       one glance, all discovered accounts
-  %(prog)s --watch               live TUI (r=refresh q=quit)
-  %(prog)s --raw                 raw usage JSON, all accounts
+  %(prog)s --demo                synthetic account overview, no auth needed
+  %(prog)s --once                one snapshot, all discovered providers
+  %(prog)s --json                structured provider-aware output
+  %(prog)s --provider codex --codex-file ~/.codex/auth.work.json
+  %(prog)s                       accounts and calendar in an interactive terminal
+  %(prog)s --watch               alias for the calendar
+  %(prog)s --raw                 legacy Claude-only usage JSON
   %(prog)s -f ~/.claude/.credentials*.json --watch
   %(prog)s --watch --threshold 90 --interval 300
   %(prog)s --watch --ntfy https://ntfy.sh/mytopic
@@ -25,24 +27,12 @@ examples:
   BARK_KEY=... %(prog)s --watch --bark   # bark CLI env (BARK_SERVER/GROUP/ICON)
   CCPACE_TZ=America/New_York,Asia/Tokyo %(prog)s
 
-usage bars merge usage and window-elapsed time:
-  █ both passed   ▓ usage ahead of time (hot)
-  ▒ time ahead of usage (headroom)   ░ untouched
-
-on terminals >= 72 cols the 7d row grows a window ledger: one cell
-per 5h window of the period (34 cells), left to right in time —
-  ▂▃▄▅▆▇█   a window that ran; height = 7d points it burned
-  ▁         ran, burned under a point — the baseline, same block as the bars
-  ░         unknown: no samples on record for that window
-  ▮         the window you are in now
-  ▯         a window still ahead of you (the hollow of ▮: an empty slot),
-            drawn dim when your learned hours say you sleep through it
-  ┤         access ends here (trial end, or the derived sub period end
-            assumed binding — the API states no renewal/cancel date)
-what follows ▮ is the advisor's "windows left" — ▮ itself is where you
-are, not a window you have left. History
-comes from the sample store (shared with claude-code-statusline; see
-docs/data.md); with no store the past is honestly ░, not empty.
+Calendar clock ticks are local wall time, independent of quota windows.
+Blank cells have no measured or forecast value; 0.0 is measured zero.
+Use 0/1/2/3 for Accounts/Calendar/History/Alerts, Enter for detail,
+Escape to return, and Ctrl+PageUp/PageDown to cycle tabs. Single click
+selects; double-click opens detail. Shift+wheel pans the displayed week.
+Read the data and provider contracts in docs/data.md.
 
 notifications: system notify is automatic; add channels with flags/env.
   --ntfy URL / CCPACE_NTFY       ntfy topic URL
@@ -78,7 +68,7 @@ from typing import Any, Literal, NamedTuple
 
 import httpx
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 CLI_VERSION = "2.1.234"
 CLIENT_PLATFORM = "claude_code_cli"  # anthropic-client-platform for entrypoint=cli
 API_VERSION = "2023-06-01"
@@ -2669,7 +2659,7 @@ def _send_notification(
         "account": account,
         "data": data,
     }
-    title = f"Claude {event.title()}"
+    title = f"{str(data.get('provider') or 'claude').title()} {event.title()}"
     message = format_notification_message(event, account, data)
 
     if url := NOTIFY_CHANNELS.get("ntfy"):
@@ -4437,7 +4427,7 @@ def build_parser() -> argparse.ArgumentParser:
         "default: discover ~/.claude/.credentials*.json",
     )
     p.add_argument(
-        "-w", "--watch", action="store_true", help="watch mode: live TUI, notifications"
+        "-w", "--watch", action="store_true", help="alias for the interactive calendar"
     )
     p.add_argument(
         "--calendar", nargs="?", const="calendar", choices=("calendar", "grid", "timeline"),
@@ -4450,6 +4440,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--theme", choices=("spectrum", "quiet", "paper"),
                    help="calendar palette (env CCPACE_THEME)")
+    p.add_argument("--provider", choices=("all", "claude", "codex"), default="all",
+                   help="provider filter (default: all)")
+    p.add_argument("--codex-file", dest="codex_files", type=Path, action="append", nargs="+", metavar="PATH",
+                   help="Codex OAuth auth JSON file(s); default CODEX_HOME/auth*.json")
+    p.add_argument("--once", action="store_true", help="print one snapshot and exit")
+    p.add_argument("--json", action="store_true", help="provider-aware account snapshots as JSON")
     p.add_argument(
         "--interval",
         type=int,
@@ -4497,7 +4493,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", action="store_true", help="show account profile JSON")
     p.add_argument("--hello", action="store_true", help="API health check (no auth)")
     p.add_argument(
-        "--raw", "--json", dest="raw", action="store_true", help="raw usage JSON"
+        "--raw", dest="raw", action="store_true", help="legacy Claude usage JSON (use --json for all providers)"
     )
     p.add_argument(
         "-q", "--quiet", action="store_true", help="suppress non-error output"
@@ -4528,7 +4524,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.quiet, args.verbose)
     signal.signal(signal.SIGINT, lambda *_: sys.exit(EXIT_INTERRUPT))
 
-    if (args.calendar or args.demo) and (args.hello or args.raw or args.profile):
+    if (args.calendar or args.demo or args.watch) and (args.hello or args.raw or args.profile):
         parser.error("--calendar/--demo cannot be combined with --hello, --raw, or --profile")
     if args.hello:
         return info_hello()
@@ -4558,14 +4554,17 @@ def main(argv: list[str] | None = None) -> int:
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None
     trace = args.verbose >= 2
 
-    if args.calendar or args.demo:
+    interactive = not (args.once or args.json or args.raw or args.profile) and (
+        bool(args.calendar or args.demo or args.watch) or (sys.stdin.isatty() and sys.stdout.isatty()))
+    if interactive:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             LOGGER.error("calendar requires an interactive terminal")
             return EXIT_USAGE
         # The script entry point and the packaged entry point share one core.
         sys.modules.setdefault("ccpace", sys.modules[__name__])
         try:
-            from ccpace_calendar import DemoSource, LiveSource
+            from ccpace_calendar import DemoSource
+            from ccpace_providers import build_source
             from ccpace_tui import CalendarApp
         except ImportError as e:
             LOGGER.error("calendar requires the full ccpace package or checkout: %s", e)
@@ -4573,38 +4572,39 @@ def main(argv: list[str] | None = None) -> int:
         if args.demo:
             source = DemoSource(args.demo)
         else:
-            credentials = get_all_credentials(cred_files, explicit_file)
-            if not credentials:
+            source = build_source(args, notifier)
+            if not source.sources:
+                LOGGER.error("no accounts found; sign in with Claude/Codex or pass --codex-file PATH")
                 return EXIT_RUNTIME
-            source = LiveSource(
-                credentials, interval=env_int("CCPACE_INTERVAL", args.interval),
-                threshold=env_int("CCPACE_THRESHOLD", args.threshold),
-                notifier=notifier, log_dir=log_dir, no_log=args.no_log, trace=trace,
-            )
         theme = args.theme or os.getenv("CCPACE_THEME")
         if theme and theme not in ("spectrum", "quiet", "paper"):
             parser.error("CCPACE_THEME must be spectrum, quiet, or paper")
         CalendarApp(source, theme=theme).run()
         return EXIT_OK
 
+    if args.json or args.once or args.codex_files or args.provider == "codex" or (args.provider == "all" and not args.raw and not args.profile):
+        sys.modules.setdefault("ccpace", sys.modules[__name__])
+        from ccpace_calendar import DemoSource
+        from ccpace_providers import build_source, snapshot_json
+        source = DemoSource(args.demo) if args.demo else build_source(args, notify=False)
+        snapshots = source.load()
+        if args.json:
+            print(json.dumps({"schema": 1, "accounts": [snapshot_json(s, source.now) for s in snapshots]}))
+        else:
+            for snapshot in snapshots:
+                print(f"{snapshot.provider.title()} / {snapshot.account} / {snapshot.tier}")
+                for meter in snapshot.meters:
+                    used = f"{meter.used:g}% used" if meter.used is not None else "unavailable"
+                    reset = datetime.fromtimestamp(meter.reset, source.now.tzinfo).strftime("%a %H:%M") if meter.reset is not None else "no active window" if meter.state == "inactive" else "unavailable"
+                    print(f"  {meter.name}: {used}; reset {reset}")
+                if snapshot.error:
+                    print(f"  {snapshot.error}")
+        return EXIT_OK if snapshots and any(not s.error for s in snapshots) else EXIT_RUNTIME
+
     credentials = get_all_credentials(cred_files, explicit_file)
 
     if args.profile:
         return info_profile(credentials)
-
-    if args.watch:
-        if args.raw:
-            LOGGER.error("--watch cannot be used with --raw")
-            return EXIT_USAGE
-        return info_usage_watch(
-            credentials,
-            env_int("CCPACE_THRESHOLD", args.threshold),
-            env_int("CCPACE_INTERVAL", args.interval),
-            notifier,
-            log_dir,
-            trace,
-            no_log=args.no_log,
-        )
 
     return info_usage(credentials, args.raw, trace, log_dir, args.no_log)
 

@@ -32,11 +32,18 @@ MAX_GAP = 1800
 class Meter:
     key: str
     name: str
-    used: float
-    reset: float
+    used: float | None
+    reset: float | None
     duration: int
+    state: str = "active"
+
+    @property
+    def timed(self) -> bool:
+        return self.reset is not None and self.used is not None and self.duration > 0
 
     def entry(self, now: datetime) -> dict:
+        if not self.timed:
+            raise ValueError("A forecast needs a reported usage window")
         elapsed = self.duration - (self.reset - now.timestamp())
         pace = self.used / 100 / (elapsed / self.duration) if elapsed > 0 else None
         return {
@@ -63,8 +70,19 @@ def meters(payload: dict) -> list[Meter]:
             or used < 0
         ):
             return
-        if stamp and stamp.tzinfo:
-            found[key] = Meter(key, name, float(used), stamp.timestamp(), duration)
+        reset_at = stamp.timestamp() if stamp and stamp.tzinfo else None
+        found[key] = Meter(
+            key,
+            name,
+            float(used),
+            reset_at,
+            duration,
+            "active"
+            if reset_at is not None
+            else "inactive"
+            if used == 0
+            else "unavailable",
+        )
 
     for field_name, key, name, duration in (
         ("five_hour", "session", "5h", cc.WINDOW_5H_SEC),
@@ -73,6 +91,15 @@ def meters(payload: dict) -> list[Meter]:
         item = payload.get(field_name)
         if isinstance(item, dict):
             add(key, name, item.get("utilization"), item.get("resets_at"), duration)
+        elif field_name in payload and item is None:
+            found[key] = Meter(
+                key,
+                name,
+                None,
+                None,
+                duration,
+                "inactive" if key == "session" else "unavailable",
+            )
     for item in payload.get("limits") or []:
         if not isinstance(item, dict):
             continue
@@ -187,7 +214,7 @@ def intervals(observations: list[Observation], key: str, now: float) -> list[Int
         {
             (o.at, o.meter.reset, o.meter.used): o
             for o in observations
-            if o.meter.key == key and o.at <= now
+            if o.meter.key == key and o.at <= now and o.meter.timed
         }.values(),
         key=lambda o: (o.at, o.meter.used),
     )
@@ -260,6 +287,15 @@ class Snapshot:
     max_age: int = 1800
     access_end: datetime | None = None
     access_note: str = ""
+    provider: str = "claude"
+    source_id: str = ""
+    limits: list[Meter] | None = None
+    reset_inventory: dict | None = None
+    credit_balance: str | None = None
+
+    @property
+    def identity(self) -> str:
+        return f"{self.provider}:{self.uuid or self.source_id or self.account}"
 
     def stale(self, now: datetime) -> bool:
         return (
@@ -270,7 +306,7 @@ class Snapshot:
 
     @property
     def meters(self) -> list[Meter]:
-        return meters(self.payload)
+        return self.limits if self.limits is not None else meters(self.payload)
 
 
 @dataclass(frozen=True)
@@ -300,9 +336,9 @@ class CalendarModel:
         self.resets = {
             round(o.meter.reset / 60) * 60
             for o in snapshot.observations
-            if o.meter.key == key
+            if o.meter.key == key and o.meter.reset is not None
         }
-        if self.meter:
+        if self.meter and self.meter.reset is not None:
             self.resets.add(round(self.meter.reset / 60) * 60)
 
     def bucket(self, start: datetime, end: datetime) -> Bucket:
@@ -313,6 +349,7 @@ class CalendarModel:
             if (
                 self.key == "weekly_all"
                 and self.meter
+                and self.meter.timed
                 and not self.snapshot.stale(self.now)
                 and b <= self.meter.reset
                 and (
@@ -383,7 +420,7 @@ def evaluate(
 
     def add(meter, event, message, severity="warning", provenance="observed"):
         reset = datetime.fromtimestamp(meter.reset, timezone.utc).isoformat()
-        identity = f"claude:{snapshot.uuid or snapshot.account}:{meter.key}:{round(meter.reset / 60)}:{event}"
+        identity = f"{snapshot.identity}:{meter.key}:{round(meter.reset / 60)}:{event}"
         conditions.append(
             Condition(
                 identity,
@@ -399,7 +436,7 @@ def evaluate(
             )
         )
 
-    live = [m for m in snapshot.meters if m.reset > now.timestamp()]
+    live = [m for m in snapshot.meters if m.timed and m.reset > now.timestamp()]
     for meter in live:
         reset = datetime.fromtimestamp(meter.reset, now.tzinfo).strftime("%a %H:%M")
         if meter.used >= 100:
@@ -481,7 +518,7 @@ def evaluate(
             advice.append("7d forecast unavailable; observations and reset clocks only")
     if not advice and not weekly:
         advice.append("Awaiting a current weekly observation")
-    if weekly:
+    if weekly and snapshot.provider == "claude":
         entries = []
         for meter in live:
             entry = meter.entry(now)
@@ -556,7 +593,7 @@ class AlertJournal:
                 continue
             conditions, _ = evaluate(snapshot, now, threshold)
             current = {c.id: c for c in conditions}
-            identity = snapshot.uuid or snapshot.account
+            identity = snapshot.identity
             states = self.state["conditions"]
             for condition in conditions:
                 state = states.setdefault(
@@ -566,7 +603,10 @@ class AlertJournal:
                 if snapshot.observed <= state["seen"]:
                     continue
                 state.update(
-                    seen=snapshot.observed, missing=0, condition=asdict(condition)
+                    account=identity,
+                    seen=snapshot.observed,
+                    missing=0,
+                    condition=asdict(condition),
                 )
                 state["hits"] += 1
                 required = (
@@ -577,7 +617,11 @@ class AlertJournal:
                     emitted.append(self._event(snapshot, condition, "entered", now))
             for key, state in list(states.items()):
                 if (
-                    state["account"] != identity
+                    state["account"]
+                    not in (
+                        identity,
+                        snapshot.uuid if snapshot.provider == "claude" else identity,
+                    )
                     or key in current
                     or snapshot.observed <= state["seen"]
                 ):
@@ -587,7 +631,9 @@ class AlertJournal:
                     (
                         m
                         for m in snapshot.meters
-                        if m.key == prior.meter and m.reset > now.timestamp()
+                        if m.key == prior.meter
+                        and m.timed
+                        and m.reset > now.timestamp()
                     ),
                     None,
                 )
@@ -657,7 +703,7 @@ class AlertJournal:
             "phase": phase,
             "reset_time": condition.reset_at,
             "timestamp": now.isoformat(),
-            "provider": "claude",
+            "provider": snapshot.provider,
         }
         event = {
             "id": transition,
@@ -685,6 +731,7 @@ class LiveSource:
         log_dir=None,
         no_log=False,
         trace=False,
+        notify=True,
     ):
         self.credentials, self.interval = (
             credentials,
@@ -701,6 +748,7 @@ class LiveSource:
         self.store = ObservationStore()
         self.journal = AlertJournal(cc.data_root() / "calendar-alerts.json", notifier)
         self.profile_at = 0.0
+        self.notify = notify
 
     @property
     def now(self):
@@ -776,7 +824,8 @@ class LiveSource:
                 )
             self.snapshots = snapshots
             try:
-                self.journal.update(snapshots, self.now, self.threshold)
+                if self.notify:
+                    self.journal.update(snapshots, self.now, self.threshold)
             except (OSError, ValueError, KeyError, TypeError):
                 cc.LOGGER.warning(
                     "calendar alert journal unavailable; observations retained"
@@ -832,7 +881,7 @@ class DemoSource:
             },
         }
         if self.scenario == "weekly-only":
-            payload.pop("five_hour")
+            payload["five_hour"] = None
         elapsed = (now.timestamp() - weekly_start.timestamp()) / cc.WINDOW_7D_SEC
         observations = []
         cursor = weekly_start - timedelta(days=14)
@@ -928,4 +977,42 @@ class DemoSource:
             now.timestamp(),
         )
         self.journal.update([snapshot, secondary], now)
-        return [snapshot, secondary]
+        codex = Snapshot(
+            "work",
+            "demo-codex",
+            "pro",
+            {},
+            now.timestamp(),
+            provider="codex",
+            limits=[
+                Meter("session", "5h", 31, five_reset.timestamp(), cc.WINDOW_5H_SEC),
+                Meter(
+                    "weekly_all",
+                    "7d all",
+                    64,
+                    weekly_reset.timestamp(),
+                    cc.WINDOW_7D_SEC,
+                ),
+            ],
+            reset_inventory={"available_count": 1, "credits": []},
+            credit_balance="25",
+        )
+        idle = Snapshot(
+            "personal",
+            "demo-idle",
+            "plus",
+            {},
+            now.timestamp(),
+            provider="codex",
+            limits=[
+                Meter("session", "5h", 0, None, cc.WINDOW_5H_SEC, "inactive"),
+                Meter(
+                    "weekly_all",
+                    "7d all",
+                    12,
+                    weekly_reset.timestamp(),
+                    cc.WINDOW_7D_SEC,
+                ),
+            ],
+        )
+        return [snapshot, secondary, codex, idle]
